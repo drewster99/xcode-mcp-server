@@ -171,14 +171,59 @@ def run_applescript(script: str) -> Tuple[bool, str]:
 
 # MCP Tools for Xcode
 
+# @mcp.tool()
+# def reinit_dirs() -> str:
+#     """
+#     Reinitialize the allowed folders.
+#     """
+#     global ALLOWED_FOLDERS
+#     ALLOWED_FOLDERS = get_allowed_folders()
+#     return f"Allowed folders reinitialized to: {ALLOWED_FOLDERS}"
+
+
 @mcp.tool()
-def reinit_dirs() -> str:
+def get_xcode_projects(search_path: str) -> str:
     """
-    Reinitialize the allowed folders.
+    Search the given search_path to find .xcodeproj (Xcode project) and
+     .xcworkspace (Xcode workspace) paths. If the search_path is empty,
+     all paths to which this tool has been granted access are searched.
+    
+    Args:
+        search_path: Path to searched.
+        
+    Returns:
+        A string which is a newline-separated list of .xcodeproj and
+        .xcworkspace paths found. If none are found, returns an empty string.
     """
-    global ALLOWED_FOLDERS
-    ALLOWED_FOLDERS = get_allowed_folders()
-    return f"Allowed folders reinitialized to: {ALLOWED_FOLDERS}"
+
+
+    project_path = search_path
+
+    # Validate input
+    if not search_path or search_path.strip() == "":
+        project_path = "/Users/andrew/Documents/ncc_source"
+        # return "Error: project_path cannot be empty"
+
+    
+    # Security check
+    if not is_path_allowed(project_path):
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
+        # return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+    
+    # Check if the path exists
+    if os.path.exists(project_path):
+        # Show the basic file structure
+        try:
+            #mdfind -onlyin /Users/andrew/Documents/ncc_source/cursor 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"' 
+            result = subprocess.run(['mdfind', '-onlyin', project_path, 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'], 
+                                   capture_output=True, text=True, check=True)
+            return result
+        except Exception as e:
+            raise XCodeMCPError(f"Error listing files in {project_path}: {str(e)}")
+            # return f"Error listing files in {project_path}: {str(e)}"
+    else:
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
+        # return f"Project path does not exist: {project_path}"
 
 
 @mcp.tool()
@@ -223,49 +268,90 @@ def get_project_hierarchy(project_path: str) -> str:
 
 @mcp.tool()
 def build_project(project_path: str, 
-                 scheme: Optional[str] = None,
-                 configuration: str = "Debug") -> str:
+                 scheme: str) -> str:
     """
     Build the specified Xcode project or workspace.
     
     Args:
         project_path: Path to an Xcode project/workspace directory.
-        scheme: Optional scheme to build. If not provided, uses the active scheme.
-        configuration: Build configuration to use. Defaults to "Debug".
+        scheme: Name of the scheme to build.
         
     Returns:
-        Build output or error message
+        On success, returns "Build succeeded with 0 errors."
+        On failure, returns the error messages from the build log.
     """
     # Validate input
     if not project_path or project_path.strip() == "":
-        return "Error: project_path cannot be empty"
+        raise InvalidParameterError("project_path cannot be empty")
     
     # Security check
     if not is_path_allowed(project_path):
-        return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
     
     if not os.path.exists(project_path):
-        return f"Error: Project path does not exist: {project_path}"
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
     
     # TODO: Implement build command using AppleScript or shell
     script = f'''
-    tell application "Xcode"
-        open "{project_path}"
-        delay 1
-        set frontWindow to front window
-        tell frontWindow
-            set currentWorkspace to workspace
-            build currentWorkspace
-        end tell
+set projectPath to "{project_path}"
+set schemeName to "{scheme}"
+
+--
+-- Then run with: osascript <thisfilename>
+--
+tell application "Xcode"
+        -- 1. Open the project file
+        open projectPath
+
+        -- 2. Get the workspace document
+        set workspaceDoc to first workspace document whose path is projectPath
+
+        -- 3. Wait for it to load (timeout after ~30 seconds)
+        repeat 60 times
+                if loaded of workspaceDoc is true then exit repeat
+                delay 0.5
+        end repeat
+
+        if loaded of workspaceDoc is false then
+                error "Xcode workspace did not load in time."
+        end if
+
+        -- 4. Set the active scheme
+        set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
+
+        -- 5. Build
+        set actionResult to build workspaceDoc
+
+        -- 6. Wait for completion
+        repeat
+                if completed of actionResult is true then exit repeat
+                delay 0.5
+        end repeat
+
+        -- 7. Check result
+        set buildStatus to status of actionResult
+        if buildStatus is succeeded then
+                -- display dialog "Build succeeded"
+                return "Build succeeded." 
+        else
+                return build log of actionResult
+        end if
+
     end tell
     '''
     
     success, output = run_applescript(script)
     
     if success:
-        return "Build started successfully"
+        if output == "Build succeeded.":
+            return "Build succeeded with 0 errors."
+        else:
+            output_lines = output.split("\n")
+            error_lines = [line for line in output_lines if "error" in line]
+            error_list = "\n".join(error_lines)
+            return f"Build failed with errors:\n{error_list}"
     else:
-        return f"Build failed to start: {output}"
+        raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")
 
 @mcp.tool()
 def run_project(project_path: str, 
@@ -282,14 +368,14 @@ def run_project(project_path: str,
     """
     # Validate input
     if not project_path or project_path.strip() == "":
-        return "Error: project_path cannot be empty"
+        raise InvalidParameterError("project_path cannot be empty")
     
     # Security check
     if not is_path_allowed(project_path):
-        return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
     
     if not os.path.exists(project_path):
-        return f"Error: Project path does not exist: {project_path}"
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
     
     # TODO: Implement run command using AppleScript
     script = f'''
@@ -309,7 +395,7 @@ def run_project(project_path: str,
     if success:
         return "Run started successfully"
     else:
-        return f"Run failed to start: {output}"
+        raise XCodeMCPError(f"Run failed to start: {output}")
 
 @mcp.tool()
 def get_build_errors(project_path: str) -> str:
@@ -324,14 +410,14 @@ def get_build_errors(project_path: str) -> str:
     """
     # Validate input
     if not project_path or project_path.strip() == "":
-        return "Error: project_path cannot be empty"
+        raise InvalidParameterError("project_path cannot be empty")
     
     # Security check
     if not is_path_allowed(project_path):
-        return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
     
     if not os.path.exists(project_path):
-        return f"Error: Project path does not exist: {project_path}"
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
     
     # TODO: Implement error retrieval using AppleScript or by parsing logs
     script = f'''
@@ -361,7 +447,7 @@ def get_build_errors(project_path: str) -> str:
     elif success:
         return "No build errors found."
     else:
-        return f"Failed to retrieve build errors: {output}"
+        raise XCodeMCPError(f"Failed to retrieve build errors: {output}")
 
 @mcp.tool()
 def clean_project(project_path: str) -> str:
@@ -376,14 +462,14 @@ def clean_project(project_path: str) -> str:
     """
     # Validate input
     if not project_path or project_path.strip() == "":
-        return "Error: project_path cannot be empty"
+        raise InvalidParameterError("project_path cannot be empty")
     
     # Security check
     if not is_path_allowed(project_path):
-        return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
     
     if not os.path.exists(project_path):
-        return f"Error: Project path does not exist: {project_path}"
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
     
     # TODO: Implement clean command using AppleScript
     script = f'''
@@ -403,7 +489,7 @@ def clean_project(project_path: str) -> str:
     if success:
         return "Clean completed successfully"
     else:
-        return f"Clean failed: {output}"
+        raise XCodeMCPError(f"Clean failed: {output}")
 
 @mcp.tool()
 def get_runtime_output(project_path: str, 
@@ -420,18 +506,18 @@ def get_runtime_output(project_path: str,
     """
     # Validate input
     if not project_path or project_path.strip() == "":
-        return "Error: project_path cannot be empty"
+        raise InvalidParameterError("project_path cannot be empty")
     
     # Security check
     if not is_path_allowed(project_path):
-        return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
     
     if not os.path.exists(project_path):
-        return f"Error: Project path does not exist: {project_path}"
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
     
     # TODO: Implement console output retrieval
     # This is a placeholder as you mentioned this functionality isn't available yet
-    return "Runtime output retrieval not yet implemented"
+    raise XCodeMCPError("Runtime output retrieval not yet implemented")
 
 # Run the server if executed directly
 if __name__ == "__main__":
