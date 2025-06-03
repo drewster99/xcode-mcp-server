@@ -215,8 +215,9 @@ def get_xcode_projects(search_path: str) -> str:
         # Show the basic file structure
         try:
             #mdfind -onlyin /Users/andrew/Documents/ncc_source/cursor 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"' 
-            result = subprocess.run(['mdfind', '-onlyin', project_path, 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'], 
+            mdfindResult = subprocess.run(['mdfind', '-onlyin', project_path, 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'], 
                                    capture_output=True, text=True, check=True)
+            result = mdfindResult.stdout.strip()
             return result
         except Exception as e:
             raise XCodeMCPError(f"Error listing files in {project_path}: {str(e)}")

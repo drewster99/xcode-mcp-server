@@ -46,6 +46,11 @@ pip install -r requirements.txt
 uv pip install -r requirements.txt
 ```
 
+If you don't have pip installed, you can do:
+```
+brew install pip
+```
+
 2. Configure Claude for Desktop:
 
 Open/create your Claude for Desktop configuration file at `~/Library/Application Support/Claude/claude_desktop_config.json` and add:
