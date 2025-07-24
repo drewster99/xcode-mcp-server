@@ -279,7 +279,7 @@ def build_project(project_path: str,
         
     Returns:
         On success, returns "Build succeeded with 0 errors."
-        On failure, returns the error messages from the build log.
+        On failure, returns the first (up to) 100 error lines from the build log.
     """
     # Validate input
     if not project_path or project_path.strip() == "":
@@ -349,6 +349,12 @@ tell application "Xcode"
         else:
             output_lines = output.split("\n")
             error_lines = [line for line in output_lines if "error" in line]
+            
+            # Limit to first 100 error lines
+            if len(error_lines) > 100:
+                error_lines = error_lines[:100]
+                error_lines.append("... (truncated to first 100 error lines)")
+                
             error_list = "\n".join(error_lines)
             return f"Build failed with errors:\n{error_list}"
     else:
@@ -430,9 +436,12 @@ def get_build_errors(project_path: str) -> str:
             set currentWorkspace to workspace
             set issuesList to get issues
             set issuesText to ""
+            set issueCount to 0
             
             repeat with anIssue in issuesList
+                if issueCount ≥ 100 then exit repeat
                 set issuesText to issuesText & "- " & message of anIssue & "\n"
+                set issueCount to issueCount + 1
             end repeat
             
             return issuesText
