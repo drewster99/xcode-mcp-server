@@ -274,12 +274,12 @@ def build_project(project_path: str,
     Build the specified Xcode project or workspace.
     
     Args:
-        project_path: Path to an Xcode project/workspace directory.
+        project_path: Path to an Xcode project workspace or directory.
         scheme: Name of the scheme to build.
         
     Returns:
         On success, returns "Build succeeded with 0 errors."
-        On failure, returns the first (up to) 100 error lines from the build log.
+        On failure, returns the first (up to) 25 error lines from the build log.
     """
     # Validate input
     if not project_path or project_path.strip() == "":
@@ -350,10 +350,10 @@ tell application "Xcode"
             output_lines = output.split("\n")
             error_lines = [line for line in output_lines if "error" in line]
             
-            # Limit to first 100 error lines
-            if len(error_lines) > 100:
-                error_lines = error_lines[:100]
-                error_lines.append("... (truncated to first 100 error lines)")
+            # Limit to first 25 error lines
+            if len(error_lines) > 25:
+                error_lines = error_lines[:25]
+                error_lines.append("... (truncated to first 25 error lines)")
                 
             error_list = "\n".join(error_lines)
             return f"Build failed with errors:\n{error_list}"
@@ -410,7 +410,7 @@ def get_build_errors(project_path: str) -> str:
     Get the build errors for the specified Xcode project or workspace.
     
     Args:
-        project_path: Path to an Xcode project/workspace directory.
+        project_path: Path to an Xcode project or workspace directory.
         
     Returns:
         A string containing the build errors or a message if there are none
@@ -439,7 +439,7 @@ def get_build_errors(project_path: str) -> str:
             set issueCount to 0
             
             repeat with anIssue in issuesList
-                if issueCount ≥ 100 then exit repeat
+                if issueCount ≥ 25 then exit repeat
                 set issuesText to issuesText & "- " & message of anIssue & "\n"
                 set issueCount to issueCount + 1
             end repeat
@@ -503,13 +503,13 @@ def clean_project(project_path: str) -> str:
 
 @mcp.tool()
 def get_runtime_output(project_path: str, 
-                      max_lines: int = 100) -> str:
+                      max_lines: int = 25) -> str:
     """
     Get the runtime output from the console for the specified Xcode project.
     
     Args:
         project_path: Path to an Xcode project/workspace directory.
-        max_lines: Maximum number of lines to retrieve. Defaults to 100.
+        max_lines: Maximum number of lines to retrieve. Defaults to 25.
         
     Returns:
         Console output as a string
