@@ -88,7 +88,57 @@ If you omit the `env` section, access will default to your $HOME directory.
 
   claude mcp add --scope user --transport stdio `which uvx` xcode-mcp-server
   
-  
+3. Add xcode-mcp-server to **Cursor AI**
+
+- Install Cursor, of course
+- In Cursor, navigate to: Cursor --> Settings --> Cursor Settings
+- Then choose 'Tools & Integrations'
+- Tap the + button for 'New MCP Server'
+
+The steps above will get you editing the file ~/.cursor/mcp.json, which you could also edit directly, if you prefer.  Add a section for 'xcode-mcp-server' in the 'mcpServers' section - like this:
+
+```json
+{
+    "mcpServers": {
+        "xcode-mcp-server": {
+            "command": "uvx",
+            "args": [
+                "xcode-mcp-server"
+            ]
+        }
+    }
+}
+```
+
+If you'd like to allow only certain projects or folders to be accessible by xcode-mcp-server, add the `env` option, with a colon-separated list of absolute folder paths, like this:
+
+```json
+{
+    "mcpServers": {
+        "xcode-mcp-server": {
+            "command": "uvx",
+            "args": [
+                "xcode-mcp-server"
+            ],
+            "env": {
+                "XCODEMCP_ALLOWED_FOLDERS": "/Users/andrew/my_project:/Users/andrew/Documents/source"
+            }
+        }
+    }
+}
+```
+
+Be sure to hit Command-S to save the file.
+
+If you omit the `env` section, access will default to your $HOME directory.
+
+### Test it out
+- Open cursor to your favorite xcode project (just open the root folder of the project or git repo), and tell Cursor something like:
+
+    build this project using xcode-mcp-server
+    
+You'll get a permission prompt from Cursor and then one from macOS, and after that you should be off and running.
+
 ## Usage
 
 1. Open Xcode with a project
