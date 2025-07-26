@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP, Context
 
 # Global variables for allowed folders
 ALLOWED_FOLDERS: Set[str] = set()
-NOTIFICATIONS_ENABLED: bool = true
+NOTIFICATIONS_ENABLED = False  # No type annotation to avoid global declaration issues
 
 class XCodeMCPError(Exception):
     def __init__(self, message, code=None):
@@ -781,7 +781,7 @@ def get_runtime_output(project_path: str,
     # This is a placeholder as you mentioned this functionality isn't available yet
     raise XCodeMCPError("Runtime output retrieval not yet implemented")
 
-# Run the server if executed directly
+# Main entry point for the server
 if __name__ == "__main__":
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Xcode MCP Server")
@@ -792,7 +792,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Handle notification settings
-    global NOTIFICATIONS_ENABLED
     if args.show_notifications and args.hide_notifications:
         print("Error: Cannot use both --show-notifications and --hide-notifications", file=sys.stderr)
         sys.exit(1)
