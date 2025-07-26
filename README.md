@@ -37,22 +37,11 @@ If no allowed folders are specified, access will be restricted and tools will re
 
 ## Setup
 
-1. Install dependencies:
+1. Configure Claude for Desktop:
 
-```bash
-# Using pip
-pip install -r requirements.txt
+First, using homebrew, install 'uv'. You might already have this on your system, but installing it via Homebrew usually ensures that `uvx` (part of `uv`)  is in the $PATH that Claude Desktop vends to on-device local MCP servers:
 
-# Or using uv (recommended)
-uv pip install -r requirements.txt
-```
-
-If you don't have pip installed, you can do:
-```
-brew install pip
-```
-
-2. Configure Claude for Desktop:
+```brew install uv```
 
 Open/create your Claude for Desktop configuration file
 - Open Claude Desktop --> Settings --> Developer --> Edit Config (to find the file in finder)
@@ -66,23 +55,45 @@ Open/create your Claude for Desktop configuration file
             "command": "uvx",
             "args": [
                 "xcode-mcp-server"
+            ]
+        }
+    }
+}
+```
+
+If you'd like to allow only certain projects or folders to be accessible by xcode-mcp-server, add the `env` option, with a colon-separated list of absolute folder paths, like this:
+
+```json
+{
+    "mcpServers": {
+        "xcode-mcp-server": {
+            "command": "uvx",
+            "args": [
+                "xcode-mcp-server"
             ],
             "env": {
-                "XCODEMCP_ALLOWED_FOLDERS": "/path/to/projects:/path/to/other/projects"
+                "XCODEMCP_ALLOWED_FOLDERS": "/Users/andrew/my_project:/Users/andrew/Documents/source"
             }
         }
     }
 }
 ```
 
-If you installed uv with 'pipx', you'll probably need to list the full path of the `uvx` command, above.
-
 If you omit the `env` section, access will default to your $HOME directory.
 
+2. Add xcode-mcp-server to **Claude Code** (Anthropic's CLI-based agent)
+
+- Install claude code 
+- Add xcode-mcp-server:
+
+  claude mcp add --scope user --transport stdio `which uvx` xcode-mcp-server
+  
+  
 ## Usage
 
 1. Open Xcode with a project
 2. Start Claude for Desktop
+   - If xcode-mcp-server failed to initialize properly, you'll see errors
 3. Look for the hammer icon to find available Xcode tools
 4. Use natural language to interact with Xcode, for example:
    - "Build the project at /path/to/MyProject.xcodeproj"
@@ -131,6 +142,5 @@ When testing in the MCP Inspector, provide input values as quoted strings:
 
 ## Limitations
 
-- Runtime output retrieval is not yet implemented
 - Project hierarchy is a simple file listing implementation
 - AppleScript syntax may need adjustments for specific Xcode versions # xcode-mcp-server

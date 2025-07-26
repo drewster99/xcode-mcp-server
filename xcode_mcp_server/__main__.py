@@ -3,6 +3,7 @@ import os
 import sys
 import subprocess
 import json
+import argparse
 from typing import Optional, Dict, List, Any, Tuple, Set
 from dataclasses import dataclass
 
@@ -23,28 +24,42 @@ class AccessDeniedError(XCodeMCPError):
 class InvalidParameterError(XCodeMCPError):
     pass
 
-def get_allowed_folders() -> Set[str]:
+def get_allowed_folders(command_line_folders: Optional[List[str]] = None) -> Set[str]:
     """
-    Get the allowed folders from environment variable.
+    Get the allowed folders from environment variable and command line.
     Validates that paths are absolute, exist, and are directories.
+    
+    Args:
+        command_line_folders: List of folders provided via command line
+        
+    Returns:
+        Set of validated folder paths
     """
     allowed_folders = set()
+    folders_to_process = []
     
     # Get from environment variable
     folder_list_str = os.environ.get("XCODEMCP_ALLOWED_FOLDERS")
     
     if folder_list_str:
         print(f"Using allowed folders from environment: {folder_list_str}", file=sys.stderr)
-    else:
-        print("Warning: Allowed folders was not specified.", file=sys.stderr)
-        print("Set XCODEMCP_ALLOWED_FOLDERS environment variable to a colon-separated list of allowed folders.", file=sys.stderr)
+        folders_to_process.extend(folder_list_str.split(":"))
+    
+    # Add command line folders
+    if command_line_folders:
+        print(f"Adding {len(command_line_folders)} folder(s) from command line", file=sys.stderr)
+        folders_to_process.extend(command_line_folders)
+    
+    # If no folders specified, use $HOME
+    if not folders_to_process:
+        print("Warning: No allowed folders specified via environment or command line.", file=sys.stderr)
+        print("Set XCODEMCP_ALLOWED_FOLDERS environment variable or use --allowed flag.", file=sys.stderr)
         home = os.environ.get("HOME", "/")
-        print(f"Trying $HOME, {home}", file=sys.stderr)
-        folder_list_str = home
+        print(f"Using default: $HOME = {home}", file=sys.stderr)
+        folders_to_process = [home]
 
-    # Process the list
-    folder_list = folder_list_str.split(":")
-    for folder in folder_list:
+    # Process all folders
+    for folder in folders_to_process:
         folder = folder.rstrip("/")  # Normalize by removing trailing slash
         
         # Skip empty entries
@@ -90,11 +105,8 @@ def is_path_allowed(project_path: str) -> bool:
     
     # If no allowed folders are specified, nothing is allowed
     if not ALLOWED_FOLDERS:
-        # try to fetch folder list
-        ALLOWED_FOLDERS = get_allowed_folders()
-        if not ALLOWED_FOLDERS:
-            print(f"Warning: not ALLOWED_FOLDERS: {', '.join(ALLOWED_FOLDERS)}", file=sys.stderr)
-            return False
+        print(f"Warning: ALLOWED_FOLDERS is empty, denying access", file=sys.stderr)
+        return False
     
     # Normalize the path
     project_path = os.path.abspath(project_path).rstrip("/")
@@ -533,11 +545,56 @@ def get_runtime_output(project_path: str,
 
 # Run the server if executed directly
 if __name__ == "__main__":
-    # Initialize allowed folders
-    ALLOWED_FOLDERS = get_allowed_folders()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Xcode MCP Server")
+    parser.add_argument("--version", action="version", version=f"xcode-mcp-server {__import__('xcode_mcp_server').__version__}")
+    parser.add_argument("--allowed", action="append", help="Add an allowed folder path (can be used multiple times)")
+    args = parser.parse_args()
+    
+    # Initialize allowed folders from environment and command line
+    ALLOWED_FOLDERS = get_allowed_folders(args.allowed)
+    
+    # Check if we have any allowed folders
+    if not ALLOWED_FOLDERS:
+        error_msg = """
+========================================================================
+ERROR: Xcode MCP Server cannot start - No valid allowed folders!
+========================================================================
+
+No valid folders were found to allow access to.
+
+To fix this, you can either:
+
+1. Set the XCODEMCP_ALLOWED_FOLDERS environment variable:
+   export XCODEMCP_ALLOWED_FOLDERS="/path/to/folder1:/path/to/folder2"
+
+2. Use the --allowed command line option:
+   xcode-mcp-server --allowed /path/to/folder1 --allowed /path/to/folder2
+
+3. Ensure your $HOME directory exists and is accessible
+
+All specified folders must:
+- Be absolute paths
+- Exist on the filesystem
+- Be directories (not files)
+- Not contain '..' components
+
+========================================================================
+"""
+        print(error_msg, file=sys.stderr)
+        
+        # Show macOS notification
+        try:
+            subprocess.run(['osascript', '-e', 
+                          'display alert "Xcode MCP Server Error" message "No valid allowed folders found. Check your configuration."'], 
+                          capture_output=True)
+        except:
+            pass  # Ignore notification errors
+        
+        sys.exit(1)
     
     # Debug info
-    print(f"Allowed folders: {ALLOWED_FOLDERS}", file=sys.stderr)
+    print(f"Total allowed folders: {ALLOWED_FOLDERS}", file=sys.stderr)
     
     # Run the server
     mcp.run() 

@@ -1,18 +1,67 @@
 """Xcode MCP Server - Model Context Protocol server for Xcode integration"""
 
+__version__ = "1.0.4"
+
 def main():
     """Entry point for the xcode-mcp-server command"""
     import sys
+    import os
+    import argparse
+    import subprocess
     from . import __main__
     
-    # Initialize allowed folders
-    __main__.ALLOWED_FOLDERS = __main__.get_allowed_folders()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Xcode MCP Server")
+    parser.add_argument("--version", action="version", version=f"xcode-mcp-server {__version__}")
+    parser.add_argument("--allowed", action="append", help="Add an allowed folder path (can be used multiple times)")
+    args = parser.parse_args()
+    
+    # Initialize allowed folders from environment and command line
+    __main__.ALLOWED_FOLDERS = __main__.get_allowed_folders(args.allowed)
+    
+    # Check if we have any allowed folders
+    if not __main__.ALLOWED_FOLDERS:
+        error_msg = """
+========================================================================
+ERROR: Xcode MCP Server cannot start - No valid allowed folders!
+========================================================================
+
+No valid folders were found to allow access to.
+
+To fix this, you can either:
+
+1. Set the XCODEMCP_ALLOWED_FOLDERS environment variable:
+   export XCODEMCP_ALLOWED_FOLDERS="/path/to/folder1:/path/to/folder2"
+
+2. Use the --allowed command line option:
+   xcode-mcp-server --allowed /path/to/folder1 --allowed /path/to/folder2
+
+3. Ensure your $HOME directory exists and is accessible
+
+All specified folders must:
+- Be absolute paths
+- Exist on the filesystem
+- Be directories (not files)
+- Not contain '..' components
+
+========================================================================
+"""
+        print(error_msg, file=sys.stderr)
+        
+        # Show macOS notification
+        try:
+            subprocess.run(['osascript', '-e', 
+                          'display alert "Xcode MCP Server Error" message "No valid allowed folders found. Check your configuration."'], 
+                          capture_output=True)
+        except:
+            pass  # Ignore notification errors
+        
+        sys.exit(1)
     
     # Debug info
-    print(f"Allowed folders: {__main__.ALLOWED_FOLDERS}", file=sys.stderr)
+    print(f"Total allowed folders: {__main__.ALLOWED_FOLDERS}", file=sys.stderr)
     
     # Run the server
     __main__.mcp.run()
 
-__version__ = "1.0.4"
-__all__ = ["main"]
+__all__ = ["main", "__version__"]
