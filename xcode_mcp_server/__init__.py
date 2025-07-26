@@ -14,7 +14,20 @@ def main():
     parser = argparse.ArgumentParser(description="Xcode MCP Server")
     parser.add_argument("--version", action="version", version=f"xcode-mcp-server {__version__}")
     parser.add_argument("--allowed", action="append", help="Add an allowed folder path (can be used multiple times)")
+    parser.add_argument("--show-notifications", action="store_true", help="Enable notifications for tool invocations")
+    parser.add_argument("--hide-notifications", action="store_true", help="Disable notifications for tool invocations")
     args = parser.parse_args()
+    
+    # Handle notification settings
+    if args.show_notifications and args.hide_notifications:
+        print("Error: Cannot use both --show-notifications and --hide-notifications", file=sys.stderr)
+        sys.exit(1)
+    elif args.show_notifications:
+        __main__.NOTIFICATIONS_ENABLED = True
+        print("Notifications enabled", file=sys.stderr)
+    elif args.hide_notifications:
+        __main__.NOTIFICATIONS_ENABLED = False
+        print("Notifications disabled", file=sys.stderr)
     
     # Initialize allowed folders from environment and command line
     __main__.ALLOWED_FOLDERS = __main__.get_allowed_folders(args.allowed)

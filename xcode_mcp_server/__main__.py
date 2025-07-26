@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP, Context
 
 # Global variables for allowed folders
 ALLOWED_FOLDERS: Set[str] = set()
+NOTIFICATIONS_ENABLED: bool = true
 
 class XCodeMCPError(Exception):
     def __init__(self, message, code=None):
@@ -183,64 +184,91 @@ def run_applescript(script: str) -> Tuple[bool, str]:
     except subprocess.CalledProcessError as e:
         return False, e.stderr.strip()
 
+def show_notification(title: str, message: str):
+    """Show a macOS notification if notifications are enabled"""
+    if NOTIFICATIONS_ENABLED:
+        try:
+            subprocess.run(['osascript', '-e', 
+                          f'display notification "{message}" with title "{title}"'], 
+                          capture_output=True)
+        except:
+            pass  # Ignore notification errors
+
 # MCP Tools for Xcode
 
-# @mcp.tool()
-# def reinit_dirs() -> str:
-#     """
-#     Reinitialize the allowed folders.
-#     """
-#     global ALLOWED_FOLDERS
-#     ALLOWED_FOLDERS = get_allowed_folders()
-#     return f"Allowed folders reinitialized to: {ALLOWED_FOLDERS}"
+@mcp.tool()
+def version() -> str:
+    """
+    Get the current version of the Xcode MCP Server.
+    
+    Returns:
+        The version string of the server
+    """
+    show_notification("Xcode MCP", "Getting server version")
+    return f"Xcode MCP Server version {__import__('xcode_mcp_server').__version__}"
 
 
 @mcp.tool()
-def get_xcode_projects(search_path: str) -> str:
+def get_xcode_projects(search_path: str = "") -> str:
     """
     Search the given search_path to find .xcodeproj (Xcode project) and
      .xcworkspace (Xcode workspace) paths. If the search_path is empty,
      all paths to which this tool has been granted access are searched.
      Searching all paths to which this tool has been granted access can
-     be very time consuming, so provide a `search_path` whenever possible.
+     uses `mdfind` (Spotlight indexing) to find the relevant files, and
+     so will only return .xcodeproj and .xcworkspace folders that are
+     indexed.
     
     Args:
-        search_path: Path to searched.
+        search_path: Path to search. If empty, searches all allowed folders.
         
     Returns:
         A string which is a newline-separated list of .xcodeproj and
         .xcworkspace paths found. If none are found, returns an empty string.
     """
-
-
-    project_path = search_path
-
-    # Validate input
+    global ALLOWED_FOLDERS
+    
+    # Determine paths to search
+    paths_to_search = []
+    
     if not search_path or search_path.strip() == "":
-        # THIS NEEDS TO BE IMPLEMENTED TO CHECK ALL FOLDERS WE HAVE ACCESS TO
-        # return "Error: project_path cannot be empty"
-
-    
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-        # return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
-    
-    # Check if the path exists
-    if os.path.exists(project_path):
-        # Show the basic file structure
-        try:
-            #mdfind -onlyin /Users/andrew/Documents/ncc_source/cursor 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"' 
-            mdfindResult = subprocess.run(['mdfind', '-onlyin', project_path, 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'], 
-                                   capture_output=True, text=True, check=True)
-            result = mdfindResult.stdout.strip()
-            return result
-        except Exception as e:
-            raise XCodeMCPError(f"Error listing files in {project_path}: {str(e)}")
-            # return f"Error listing files in {project_path}: {str(e)}"
+        # Search all allowed folders
+        show_notification("Xcode MCP", f"Searching all {len(ALLOWED_FOLDERS)} allowed folders for Xcode projects")
+        paths_to_search = list(ALLOWED_FOLDERS)
     else:
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-        # return f"Project path does not exist: {project_path}"
+        # Search specific path
+        project_path = search_path.strip()
+        
+        # Security check
+        if not is_path_allowed(project_path):
+            raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
+        
+        # Check if the path exists
+        if not os.path.exists(project_path):
+            raise InvalidParameterError(f"Project path does not exist: {project_path}")
+            
+        show_notification("Xcode MCP", f"Searching {project_path} for Xcode projects")
+        paths_to_search = [project_path]
+    
+    # Search for projects in all paths
+    all_results = []
+    for path in paths_to_search:
+        try:
+            # Use mdfind to search for Xcode projects
+            mdfindResult = subprocess.run(['mdfind', '-onlyin', path, 
+                                         'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'], 
+                                         capture_output=True, text=True, check=True)
+            result = mdfindResult.stdout.strip()
+            if result:
+                all_results.extend(result.split('\n'))
+        except Exception as e:
+            print(f"Warning: Error searching in {path}: {str(e)}", file=sys.stderr)
+            continue
+    
+    # Remove duplicates and sort
+    unique_results = sorted(set(all_results))
+    
+    return '\n'.join(unique_results) if unique_results else ""
 
 
 @mcp.tool()
@@ -257,12 +285,12 @@ def get_project_hierarchy(project_path: str) -> str:
     # Validate input
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
-        # return "Error: project_path cannot be empty"
+    
+    show_notification("Xcode MCP", f"Getting hierarchy for {os.path.basename(project_path)}")
     
     # Security check
     if not is_path_allowed(project_path):
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-        # return f"Error: Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable."
     
     # Check if the path exists
     if os.path.exists(project_path):
@@ -300,6 +328,8 @@ def build_project(project_path: str,
     # Validate input
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
+    
+    show_notification("Xcode MCP", f"Building {scheme} in {os.path.basename(project_path)}")
     
     # Security check
     if not is_path_allowed(project_path):
@@ -551,7 +581,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Xcode MCP Server")
     parser.add_argument("--version", action="version", version=f"xcode-mcp-server {__import__('xcode_mcp_server').__version__}")
     parser.add_argument("--allowed", action="append", help="Add an allowed folder path (can be used multiple times)")
+    parser.add_argument("--show-notifications", action="store_true", help="Enable notifications for tool invocations")
+    parser.add_argument("--hide-notifications", action="store_true", help="Disable notifications for tool invocations")
     args = parser.parse_args()
+    
+    # Handle notification settings
+    global NOTIFICATIONS_ENABLED
+    if args.show_notifications and args.hide_notifications:
+        print("Error: Cannot use both --show-notifications and --hide-notifications", file=sys.stderr)
+        sys.exit(1)
+    elif args.show_notifications:
+        NOTIFICATIONS_ENABLED = True
+        print("Notifications enabled", file=sys.stderr)
+    elif args.hide_notifications:
+        NOTIFICATIONS_ENABLED = False
+        print("Notifications disabled", file=sys.stderr)
     
     # Initialize allowed folders from environment and command line
     ALLOWED_FOLDERS = get_allowed_folders(args.allowed)
