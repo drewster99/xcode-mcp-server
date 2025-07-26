@@ -16,6 +16,7 @@ The server implements path-based security to prevent unauthorized access to file
 
 - You must specify allowed folders using the environment variable:
   - `XCODEMCP_ALLOWED_FOLDERS=/path1:/path2:/path3`
+- Otherwise, all files and subfolders from your home directory ($HOME) will be allowed.
 
 Security requirements:
 - All paths must be absolute (starting with /)
@@ -53,15 +54,18 @@ brew install pip
 
 2. Configure Claude for Desktop:
 
-Open/create your Claude for Desktop configuration file at `~/Library/Application Support/Claude/claude_desktop_config.json` and add:
+Open/create your Claude for Desktop configuration file
+- Open Claude Desktop --> Settings --> Developer --> Edit Config (to find the file in finder)
+- It should be at `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Add the following:
 
 ```json
 {
     "mcpServers": {
-        "xcode": {
-            "command": "python3",
+        "xcode-mcp-server": {
+            "command": "uvx",
             "args": [
-                "/ABSOLUTE/PATH/TO/xcode_mcp.py"
+                "xcode-mcp-server"
             ],
             "env": {
                 "XCODEMCP_ALLOWED_FOLDERS": "/path/to/projects:/path/to/other/projects"
@@ -71,7 +75,9 @@ Open/create your Claude for Desktop configuration file at `~/Library/Application
 }
 ```
 
-Replace `/ABSOLUTE/PATH/TO/xcode_mcp.py` with the actual path to your xcode_mcp.py file, and set appropriate allowed folders in the `env` section.
+If you installed uv with 'pipx', you'll probably need to list the full path of the `uvx` command, above.
+
+If you omit the `env` section, access will default to your $HOME directory.
 
 ## Usage
 

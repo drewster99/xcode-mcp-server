@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xcode-mcp-server"
-version = "1.0.2"
+dynamic = ["version"]
 description = "Drew's MCP server for Xcode integration"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -30,6 +30,9 @@ dependencies = [
 
 [project.scripts]
 xcode-mcp-server = "xcode_mcp_server:main"
+
+[tool.hatch.version]
+path = "xcode_mcp_server/__init__.py"
 
 [tool.uv]
 dev-dependencies = []

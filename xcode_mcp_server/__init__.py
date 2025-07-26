@@ -14,5 +14,5 @@ def main():
     # Run the server
     __main__.mcp.run()
 
-__version__ = "1.0.0"
+__version__ = "1.0.4"
 __all__ = ["main"]
