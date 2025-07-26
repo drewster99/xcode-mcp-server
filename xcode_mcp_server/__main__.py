@@ -31,14 +31,16 @@ def get_allowed_folders() -> Set[str]:
     allowed_folders = set()
     
     # Get from environment variable
-    folder_list_str = os.environ.get("XCODEMCP_ALLOWED_FOLDERS", "monkies")
+    folder_list_str = os.environ.get("XCODEMCP_ALLOWED_FOLDERS")
     
     if folder_list_str:
         print(f"Using allowed folders from environment: {folder_list_str}", file=sys.stderr)
     else:
-        print("Warning: No allowed folders specified. Access will be restricted.", file=sys.stderr)
-        print("Set XCODEMCP_ALLOWED_FOLDERS environment variable to specify allowed folders.", file=sys.stderr)
-        return allowed_folders
+        print("Warning: Allowed folders was not specified.", file=sys.stderr)
+        print("Set XCODEMCP_ALLOWED_FOLDERS environment variable to a colon-separated list of allowed folders.", file=sys.stderr)
+        home = os.environ.get("HOME", "/")
+        print(f"Trying $HOME, {home}", file=sys.stderr)
+        folder_list_str = home
 
     # Process the list
     folder_list = folder_list_str.split(":")
