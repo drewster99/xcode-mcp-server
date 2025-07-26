@@ -128,7 +128,31 @@ def is_path_allowed(project_path: str) -> bool:
     return False
 
 # Initialize the MCP server
-mcp = FastMCP("Xcode MCP Server")
+mcp = FastMCP("Xcode MCP Server",
+    instructions="""
+        This server provides access to the Xcode IDE. For any project intended
+        for Apple platforms, such as iOS or macOS, this MCP server is the best
+        way to build or run .xcodeproj or .xcworkspace Xcode projects, and should
+        always be preferred over using `xcodebuild`, `swift build`, or
+        `swift package build`. Building with this tool ensures the build happens
+        exactly the same way as when the user builds with Xcode, with all the same
+        settings, so you will get the same results the user sees. The user can also
+        see any results immediately and a subsequent build and run by the user will
+        happen almost instantly for the user.
+
+        You might start with `get_frontmost_project` to see if the user currently
+        has an Xcode project already open.
+
+        You can call `get_xcode_projects` to find Xcode project (.xcodeproj) and
+        Xcode workspace (.xcworkspace) folders under a given root folder.
+
+        You can call `get_project_schemes` to get the build scheme names for a given
+        .xcodeproj or .xcworkspace.
+
+        Call build_project to build the project and get back the first 25 lines of
+        error output. `build_project` will default to the active scheme if none is provided.
+    """
+)
 
 # Helper functions for Xcode interaction
 def get_frontmost_project() -> str:
@@ -277,7 +301,8 @@ def get_project_hierarchy(project_path: str) -> str:
     Get the hierarchy of the specified Xcode project or workspace.
     
     Args:
-        project_path: Path to an Xcode project/workspace directory.
+        project_path: Path to an Xcode project/workspace directory, which must
+        end in '.xcodeproj' or '.xcworkspace' and must exist.
         
     Returns:
         A string representation of the project hierarchy
@@ -286,6 +311,12 @@ def get_project_hierarchy(project_path: str) -> str:
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
     
+    project_path = project_path.strip()
+    
+    # Verify path ends with .xcodeproj or .xcworkspace
+    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
+        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
+    
     show_notification("Xcode MCP", f"Getting hierarchy for {os.path.basename(project_path)}")
     
     # Security check
@@ -293,33 +324,164 @@ def get_project_hierarchy(project_path: str) -> str:
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
     
     # Check if the path exists
-    if os.path.exists(project_path):
-        # Show the basic file structure
-        try:
-            result = subprocess.run(['find', project_path, '-type', 'f', '-name', '*.swift', '-o', '-name', '*.h', '-o', '-name', '*.m'], 
-                                   capture_output=True, text=True, check=True)
-            files = result.stdout.strip().split('\n')
-            if not files or (len(files) == 1 and files[0] == ''):
-                raise InvalidParameterError(f"No source files found in {project_path}")
-                # return f"No source files found in {project_path}"
-            
-            return f"Project at {project_path} contains {len(files)} source files:\n" + '\n'.join(files)
-        except Exception as e:
-            raise XCodeMCPError(f"Error listing files in {project_path}: {str(e)}")
-            # return f"Error listing files in {project_path}: {str(e)}"
-    else:
+    if not os.path.exists(project_path):
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
-        # return f"Project path does not exist: {project_path}"
+    
+    # Get the parent directory to scan
+    parent_dir = os.path.dirname(project_path)
+    project_name = os.path.basename(project_path)
+    
+    # Build the hierarchy
+    def build_hierarchy(path: str, prefix: str = "", is_last: bool = True, base_path: str = "") -> List[str]:
+        """Recursively build a visual hierarchy of files and folders"""
+        lines = []
+        
+        if not base_path:
+            base_path = path
+            
+        # Get relative path for display
+        rel_path = os.path.relpath(path, os.path.dirname(base_path))
+        
+        # Add current item
+        if path != base_path:
+            connector = "└── " if is_last else "├── "
+            name = os.path.basename(path)
+            if os.path.isdir(path):
+                name += "/"
+            lines.append(prefix + connector + name)
+            
+            # Update prefix for children
+            extension = "    " if is_last else "│   "
+            prefix = prefix + extension
+        
+        # If it's a directory, recurse into it (with restrictions)
+        if os.path.isdir(path):
+            # Skip certain directories
+            if os.path.basename(path) in ['.build', 'build']:
+                return lines
+                
+            # Don't recurse into .xcodeproj or .xcworkspace directories
+            if path.endswith('.xcodeproj') or path.endswith('.xcworkspace'):
+                return lines
+            
+            try:
+                items = sorted(os.listdir(path))
+                # Filter out hidden files except for important ones
+                items = [item for item in items if not item.startswith('.') or item in ['.gitignore', '.swift-version']]
+                
+                for i, item in enumerate(items):
+                    item_path = os.path.join(path, item)
+                    is_last_item = (i == len(items) - 1)
+                    lines.extend(build_hierarchy(item_path, prefix, is_last_item, base_path))
+            except PermissionError:
+                pass
+                
+        return lines
+    
+    # Build hierarchy starting from parent directory
+    hierarchy_lines = [parent_dir + "/"]
+    
+    try:
+        items = sorted(os.listdir(parent_dir))
+        # Filter out hidden files and build directories
+        items = [item for item in items if not item.startswith('.') or item in ['.gitignore', '.swift-version']]
+        
+        for i, item in enumerate(items):
+            item_path = os.path.join(parent_dir, item)
+            is_last_item = (i == len(items) - 1)
+            hierarchy_lines.extend(build_hierarchy(item_path, "", is_last_item, parent_dir))
+            
+    except Exception as e:
+        raise XCodeMCPError(f"Error building hierarchy for {project_path}: {str(e)}")
+    
+    return '\n'.join(hierarchy_lines)
+
+@mcp.tool()
+def get_project_schemes(project_path: str) -> str:
+    """
+    Get the available build schemes for the specified Xcode project or workspace.
+    
+    Args:
+        project_path: Path to an Xcode project/workspace directory, which must
+        end in '.xcodeproj' or '.xcworkspace' and must exist.
+        
+    Returns:
+        A newline-separated list of scheme names, with the active scheme listed first.
+        If no schemes are found, returns an empty string.
+    """
+    # Validate input
+    if not project_path or project_path.strip() == "":
+        raise InvalidParameterError("project_path cannot be empty")
+    
+    project_path = project_path.strip()
+    
+    # Verify path ends with .xcodeproj or .xcworkspace
+    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
+        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
+    
+    show_notification("Xcode MCP", f"Getting schemes for {os.path.basename(project_path)}")
+    
+    # Security check
+    if not is_path_allowed(project_path):
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
+    
+    # Check if the path exists
+    if not os.path.exists(project_path):
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
+    
+    script = f'''
+    tell application "Xcode"
+        open "{project_path}"
+        
+        set workspaceDoc to first workspace document whose path is "{project_path}"
+        
+        -- Wait for it to load
+        repeat 60 times
+            if loaded of workspaceDoc is true then exit repeat
+            delay 0.5
+        end repeat
+        
+        if loaded of workspaceDoc is false then
+            error "Xcode workspace did not load in time."
+        end if
+        
+        -- Get active scheme name
+        set activeScheme to name of active scheme of workspaceDoc
+        
+        -- Get all scheme names
+        set schemeNames to {{}}
+        repeat with aScheme in schemes of workspaceDoc
+            set end of schemeNames to name of aScheme
+        end repeat
+        
+        -- Format output with active scheme first
+        set output to activeScheme & " (active)"
+        repeat with schemeName in schemeNames
+            if schemeName as string is not equal to activeScheme then
+                set output to output & "\\n" & schemeName
+            end if
+        end repeat
+        
+        return output
+    end tell
+    '''
+    
+    success, output = run_applescript(script)
+    
+    if success:
+        return output
+    else:
+        raise XCodeMCPError(f"Failed to get schemes for {project_path}: {output}")
 
 @mcp.tool()
 def build_project(project_path: str, 
-                 scheme: str) -> str:
+                 scheme: Optional[str] = None) -> str:
     """
     Build the specified Xcode project or workspace.
     
     Args:
         project_path: Path to an Xcode project workspace or directory.
-        scheme: Name of the scheme to build.
+        scheme: Name of the scheme to build. If not provided, uses the active scheme.
         
     Returns:
         On success, returns "Build succeeded with 0 errors."
@@ -329,7 +491,14 @@ def build_project(project_path: str,
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
     
-    show_notification("Xcode MCP", f"Building {scheme} in {os.path.basename(project_path)}")
+    project_path = project_path.strip()
+    
+    # Verify path ends with .xcodeproj or .xcworkspace
+    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
+        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
+    
+    scheme_desc = scheme if scheme else "active scheme"
+    show_notification("Xcode MCP", f"Building {scheme_desc} in {os.path.basename(project_path)}")
     
     # Security check
     if not is_path_allowed(project_path):
@@ -338,14 +507,13 @@ def build_project(project_path: str,
     if not os.path.exists(project_path):
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
     
-    # TODO: Implement build command using AppleScript or shell
-    script = f'''
+    # Build the AppleScript
+    if scheme:
+        # Use provided scheme
+        script = f'''
 set projectPath to "{project_path}"
 set schemeName to "{scheme}"
 
---
--- Then run with: osascript <thisfilename>
---
 tell application "Xcode"
         -- 1. Open the project file
         open projectPath
@@ -378,13 +546,51 @@ tell application "Xcode"
         -- 7. Check result
         set buildStatus to status of actionResult
         if buildStatus is succeeded then
-                -- display dialog "Build succeeded"
                 return "Build succeeded." 
         else
                 return build log of actionResult
         end if
+end tell
+    '''
+    else:
+        # Use active scheme
+        script = f'''
+set projectPath to "{project_path}"
 
-    end tell
+tell application "Xcode"
+        -- 1. Open the project file
+        open projectPath
+
+        -- 2. Get the workspace document
+        set workspaceDoc to first workspace document whose path is projectPath
+
+        -- 3. Wait for it to load (timeout after ~30 seconds)
+        repeat 60 times
+                if loaded of workspaceDoc is true then exit repeat
+                delay 0.5
+        end repeat
+
+        if loaded of workspaceDoc is false then
+                error "Xcode workspace did not load in time."
+        end if
+
+        -- 4. Build with current active scheme
+        set actionResult to build workspaceDoc
+
+        -- 5. Wait for completion
+        repeat
+                if completed of actionResult is true then exit repeat
+                delay 0.5
+        end repeat
+
+        -- 6. Check result
+        set buildStatus to status of actionResult
+        if buildStatus is succeeded then
+                return "Build succeeded." 
+        else
+                return build log of actionResult
+        end if
+end tell
     '''
     
     success, output = run_applescript(script)
