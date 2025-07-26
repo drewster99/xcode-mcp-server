@@ -201,6 +201,8 @@ def get_xcode_projects(search_path: str) -> str:
     Search the given search_path to find .xcodeproj (Xcode project) and
      .xcworkspace (Xcode workspace) paths. If the search_path is empty,
      all paths to which this tool has been granted access are searched.
+     Searching all paths to which this tool has been granted access can
+     be very time consuming, so provide a `search_path` whenever possible.
     
     Args:
         search_path: Path to searched.
@@ -215,7 +217,7 @@ def get_xcode_projects(search_path: str) -> str:
 
     # Validate input
     if not search_path or search_path.strip() == "":
-        project_path = "/Users/andrew/Documents/ncc_source"
+        # THIS NEEDS TO BE IMPLEMENTED TO CHECK ALL FOLDERS WE HAVE ACCESS TO
         # return "Error: project_path cannot be empty"
 
     
