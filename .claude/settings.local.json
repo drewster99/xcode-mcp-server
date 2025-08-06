@@ -5,7 +5,8 @@
       "Bash(mkdir:*)",
       "Bash(mv:*)",
       "Bash(pip install:*)",
-      "Bash(xcode-mcp-server:*)"
+      "Bash(xcode-mcp-server:*)",
+      "mcp__uvx__get_project_schemes"
     ],
     "deny": []
   }

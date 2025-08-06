@@ -445,8 +445,13 @@ def get_project_schemes(project_path: str) -> str:
             error "Xcode workspace did not load in time."
         end if
         
-        -- Get active scheme name
-        set activeScheme to name of active scheme of workspaceDoc
+        -- Try to get active scheme name, but don't fail if we can't
+        set activeScheme to ""
+        try
+            set activeScheme to name of active scheme of workspaceDoc
+        on error
+            -- If we can't get active scheme (e.g., Xcode is busy), continue without it
+        end try
         
         -- Get all scheme names
         set schemeNames to {{}}
@@ -454,13 +459,22 @@ def get_project_schemes(project_path: str) -> str:
             set end of schemeNames to name of aScheme
         end repeat
         
-        -- Format output with active scheme first
-        set output to activeScheme & " (active)"
-        repeat with schemeName in schemeNames
-            if schemeName as string is not equal to activeScheme then
-                set output to output & "\\n" & schemeName
-            end if
-        end repeat
+        -- Format output
+        set output to ""
+        if activeScheme is not "" then
+            -- If we have an active scheme, list it first with annotation
+            set output to activeScheme & " (active)"
+            repeat with schemeName in schemeNames
+                if schemeName as string is not equal to activeScheme then
+                    set output to output & "\\n" & schemeName
+                end if
+            end repeat
+        else
+            -- If no active scheme available, just list all schemes
+            set AppleScript's text item delimiters to "\\n"
+            set output to schemeNames as string
+            set AppleScript's text item delimiters to ""
+        end if
         
         return output
     end tell
