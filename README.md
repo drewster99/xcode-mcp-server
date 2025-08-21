@@ -86,7 +86,7 @@ If you omit the `env` section, access will default to your $HOME directory.
 - Install claude code 
 - Add xcode-mcp-server:
 
-  claude mcp add --scope user --transport stdio `which uvx` xcode-mcp-server
+  claude mcp add --scope user --transport stdio \`which uvx\` xcode-mcp-server
   
 3. Add xcode-mcp-server to **Cursor AI**
 
