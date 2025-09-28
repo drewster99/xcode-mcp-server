@@ -12,6 +12,8 @@ from mcp.server.fastmcp import FastMCP, Context
 # Global variables for allowed folders
 ALLOWED_FOLDERS: Set[str] = set()
 NOTIFICATIONS_ENABLED = False  # No type annotation to avoid global declaration issues
+BUILD_WARNINGS_ENABLED = True  # No type annotation to avoid global declaration issues
+BUILD_WARNINGS_FORCED = None  # True if forced on, False if forced off, None if not forced
 
 class XCodeMCPError(Exception):
     def __init__(self, message, code=None):
@@ -488,29 +490,35 @@ def get_project_schemes(project_path: str) -> str:
         raise XCodeMCPError(f"Failed to get schemes for {project_path}: {output}")
 
 @mcp.tool()
-def build_project(project_path: str, 
-                 scheme: Optional[str] = None) -> str:
+def build_project(project_path: str,
+                 scheme: Optional[str] = None,
+                 include_warnings: Optional[bool] = None) -> str:
     """
     Build the specified Xcode project or workspace.
-    
+
     Args:
         project_path: Path to an Xcode project workspace or directory.
         scheme: Name of the scheme to build. If not provided, uses the active scheme.
-        
+        include_warnings: Include warnings in build output. If not provided, uses global setting.
+
     Returns:
         On success, returns "Build succeeded with 0 errors."
-        On failure, returns the first (up to) 25 error lines from the build log.
+        On failure, returns the first (up to) 25 error/warning lines from the build log.
     """
     # Validate input
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
-    
+
     project_path = project_path.strip()
-    
+
+    # Validate include_warnings parameter
+    if include_warnings is not None and not isinstance(include_warnings, bool):
+        raise InvalidParameterError("include_warnings must be a boolean value")
+
     # Verify path ends with .xcodeproj or .xcworkspace
     if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
         raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
-    
+
     scheme_desc = scheme if scheme else "active scheme"
     show_notification("Xcode MCP", f"Building {scheme_desc} in {os.path.basename(project_path)}")
     
@@ -613,16 +621,66 @@ end tell
         if output == "Build succeeded.":
             return "Build succeeded with 0 errors."
         else:
+            # Determine whether to include warnings
+            # Command-line flags override function parameter (user control > LLM control)
+            if BUILD_WARNINGS_FORCED is not None:
+                # User explicitly set a command-line flag to force behavior
+                show_warnings = BUILD_WARNINGS_FORCED
+            else:
+                # No forcing, use function parameter or default
+                show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
+
             output_lines = output.split("\n")
-            error_lines = [line for line in output_lines if "error" in line]
-            
-            # Limit to first 25 error lines
-            if len(error_lines) > 25:
-                error_lines = error_lines[:25]
-                error_lines.append("... (truncated to first 25 error lines)")
-                
-            error_list = "\n".join(error_lines)
-            return f"Build failed with errors:\n{error_list}"
+            error_lines = []
+            warning_lines = []
+
+            # Single iteration through output lines
+            for line in output_lines:
+                line_lower = line.lower()
+                if "error" in line_lower:
+                    error_lines.append(line)
+                elif show_warnings and "warning" in line_lower:
+                    warning_lines.append(line)
+
+            # Store total counts
+            total_errors = len(error_lines)
+            total_warnings = len(warning_lines)
+
+            # Combine errors first, then warnings
+            important_lines = error_lines + warning_lines
+
+            # Calculate what we're actually showing
+            displayed_errors = min(total_errors, 25)
+            displayed_warnings = 0 if total_errors >= 25 else min(total_warnings, 25 - total_errors)
+
+            # Limit to first 25 important lines
+            if len(important_lines) > 25:
+                important_lines = important_lines[:25]
+
+            important_list = "\n".join(important_lines)
+
+            # Build appropriate message based on what we found
+            if error_lines and warning_lines:
+                # Build detailed count message
+                count_msg = f"Build failed with {total_errors} error(s) and {total_warnings} warning(s)."
+                if total_errors + total_warnings > 25:
+                    if displayed_warnings == 0:
+                        count_msg += f" Showing first {displayed_errors} errors."
+                    else:
+                        count_msg += f" Showing {displayed_errors} error(s) and first {displayed_warnings} warning(s)."
+                return f"{count_msg}\n{important_list}"
+            elif error_lines:
+                count_msg = f"Build failed with {total_errors} error(s)."
+                if total_errors > 25:
+                    count_msg += f" Showing first 25 errors."
+                return f"{count_msg}\n{important_list}"
+            elif warning_lines:
+                count_msg = f"Build completed with {total_warnings} warning(s)."
+                if total_warnings > 25:
+                    count_msg += f" Showing first 25 warnings."
+                return f"{count_msg}\n{important_list}"
+            else:
+                return "Build failed (no specific errors or warnings found in output)"
     else:
         raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")
 
@@ -671,27 +729,42 @@ def run_project(project_path: str,
         raise XCodeMCPError(f"Run failed to start: {output}")
 
 @mcp.tool()
-def get_build_errors(project_path: str) -> str:
+def get_build_errors(project_path: str,
+                    include_warnings: Optional[bool] = None) -> str:
     """
     Get the build errors for the specified Xcode project or workspace.
-    
+
     Args:
         project_path: Path to an Xcode project or workspace directory.
-        
+        include_warnings: Include warnings in output. If not provided, uses global setting.
+
     Returns:
-        A string containing the build errors or a message if there are none
+        A string containing the build errors/warnings or a message if there are none
     """
     # Validate input
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
-    
+
+    # Validate include_warnings parameter
+    if include_warnings is not None and not isinstance(include_warnings, bool):
+        raise InvalidParameterError("include_warnings must be a boolean value")
+
+    # Determine whether to include warnings
+    # Command-line flags override function parameter (user control > LLM control)
+    if BUILD_WARNINGS_FORCED is not None:
+        # User explicitly set a command-line flag to force behavior
+        show_warnings = BUILD_WARNINGS_FORCED
+    else:
+        # No forcing, use function parameter or default
+        show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
+
     # Security check
     if not is_path_allowed(project_path):
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
+
     if not os.path.exists(project_path):
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
-    
+
     # TODO: Implement error retrieval using AppleScript or by parsing logs
     script = f'''
     tell application "Xcode"
@@ -803,6 +876,8 @@ if __name__ == "__main__":
     parser.add_argument("--allowed", action="append", help="Add an allowed folder path (can be used multiple times)")
     parser.add_argument("--show-notifications", action="store_true", help="Enable notifications for tool invocations")
     parser.add_argument("--hide-notifications", action="store_true", help="Disable notifications for tool invocations")
+    parser.add_argument("--no-build-warnings", action="store_true", help="Exclude warnings from build output")
+    parser.add_argument("--always-include-build-warnings", action="store_true", help="Always include warnings in build output")
     args = parser.parse_args()
     
     # Handle notification settings
@@ -815,6 +890,19 @@ if __name__ == "__main__":
     elif args.hide_notifications:
         NOTIFICATIONS_ENABLED = False
         print("Notifications disabled", file=sys.stderr)
+
+    # Handle build warning settings
+    if args.no_build_warnings and args.always_include_build_warnings:
+        print("Error: Cannot use both --no-build-warnings and --always-include-build-warnings", file=sys.stderr)
+        sys.exit(1)
+    elif args.no_build_warnings:
+        BUILD_WARNINGS_ENABLED = False
+        BUILD_WARNINGS_FORCED = False
+        print("Build warnings forcibly disabled", file=sys.stderr)
+    elif args.always_include_build_warnings:
+        BUILD_WARNINGS_ENABLED = True
+        BUILD_WARNINGS_FORCED = True
+        print("Build warnings forcibly enabled", file=sys.stderr)
     
     # Initialize allowed folders from environment and command line
     ALLOWED_FOLDERS = get_allowed_folders(args.allowed)

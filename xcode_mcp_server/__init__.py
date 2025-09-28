@@ -16,6 +16,8 @@ def main():
     parser.add_argument("--allowed", action="append", help="Add an allowed folder path (can be used multiple times)")
     parser.add_argument("--show-notifications", action="store_true", help="Enable notifications for tool invocations")
     parser.add_argument("--hide-notifications", action="store_true", help="Disable notifications for tool invocations")
+    parser.add_argument("--no-build-warnings", action="store_true", help="Exclude warnings from build output")
+    parser.add_argument("--always-include-build-warnings", action="store_true", help="Always include warnings in build output")
     args = parser.parse_args()
     
     # Handle notification settings
@@ -28,6 +30,19 @@ def main():
     elif args.hide_notifications:
         __main__.NOTIFICATIONS_ENABLED = False
         print("Notifications disabled", file=sys.stderr)
+
+    # Handle build warning settings
+    if args.no_build_warnings and args.always_include_build_warnings:
+        print("Error: Cannot use both --no-build-warnings and --always-include-build-warnings", file=sys.stderr)
+        sys.exit(1)
+    elif args.no_build_warnings:
+        __main__.BUILD_WARNINGS_ENABLED = False
+        __main__.BUILD_WARNINGS_FORCED = False
+        print("Build warnings forcibly disabled", file=sys.stderr)
+    elif args.always_include_build_warnings:
+        __main__.BUILD_WARNINGS_ENABLED = True
+        __main__.BUILD_WARNINGS_FORCED = True
+        print("Build warnings forcibly enabled", file=sys.stderr)
     
     # Initialize allowed folders from environment and command line
     __main__.ALLOWED_FOLDERS = __main__.get_allowed_folders(args.allowed)

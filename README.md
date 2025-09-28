@@ -6,7 +6,7 @@ An MCP (Model Context Protocol) server for controlling and interacting with Xcod
 
 - Get project hierarchy
 - Build and run projects
-- Retrieve build errors
+- Retrieve build errors and warnings
 - Get runtime output (placeholder)
 - Clean projects
 
@@ -164,6 +164,47 @@ or
 ```
 "/path/to/your/project"
 ```
+
+## Configuration Options
+
+### Command Line Arguments
+
+The server supports several command line arguments for customization:
+
+#### Build Warning Control
+- `--no-build-warnings`: Exclude warnings from build output (only show errors)
+- `--always-include-build-warnings`: Always include warnings in build output (default behavior)
+
+Example usage:
+```bash
+# Exclude warnings from build output
+xcode-mcp-server --no-build-warnings
+
+# Explicitly enable warnings (default behavior)
+xcode-mcp-server --always-include-build-warnings
+```
+
+#### Notification Control
+- `--show-notifications`: Enable macOS notifications for tool invocations
+- `--hide-notifications`: Disable macOS notifications
+
+#### Allowed Folders
+- `--allowed /path/to/folder`: Add an allowed folder path (can be used multiple times)
+
+Example combining multiple options:
+```bash
+xcode-mcp-server --no-build-warnings --show-notifications --allowed /Users/me/Projects
+```
+
+### Build Output Behavior
+
+By default, when a build fails:
+1. The server collects both error and warning lines from the build output
+2. Errors are prioritized and listed first, followed by warnings
+3. The output is limited to the first 25 lines total (errors + warnings)
+4. You can exclude warnings using `--no-build-warnings` to focus only on errors
+
+The `build_project` tool also accepts an optional `include_warnings` parameter that overrides the global setting for individual build operations.
 
 ## Development
 
