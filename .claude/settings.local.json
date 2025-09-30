@@ -6,7 +6,14 @@
       "Bash(mv:*)",
       "Bash(pip install:*)",
       "Bash(xcode-mcp-server:*)",
-      "mcp__uvx__get_project_schemes"
+      "mcp__uvx__get_project_schemes",
+      "Bash(say:*)",
+      "Bash(osascript:*)",
+      "Read(//Users/andrew/Downloads/Xcode_26_RC.app/Contents/**)",
+      "Read(//Applications/Xcode.app/Contents/Resources/**)",
+      "Bash(plutil:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": []
   }
