@@ -50,7 +50,7 @@ XCODEMCP_ALLOWED_FOLDERS=/path/to/projects uvx xcode-mcp-server
 
 2. **MCP Server Implementation** (`xcode_mcp_server/__main__.py`)
    - Built with FastMCP framework
-   - Implements 9 tools for Xcode interaction:
+   - Implements 10 tools for Xcode interaction:
      - `version`: Get server version
      - `get_xcode_projects`: Find .xcodeproj/.xcworkspace files
      - `get_project_hierarchy`: Get project structure
@@ -59,6 +59,7 @@ XCODEMCP_ALLOWED_FOLDERS=/path/to/projects uvx xcode-mcp-server
      - `run_project`: Run the project in Xcode
      - `get_build_errors`: Retrieve build error output
      - `clean_project`: Clean build artifacts
+     - `stop_project`: Stop current build or run operation
      - `get_runtime_output`: Get console output from running app
 
 ### Security Model

@@ -7,7 +7,6 @@ import argparse
 import time
 import re
 from typing import Optional, Dict, List, Any, Tuple, Set
-from dataclasses import dataclass
 
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -102,34 +101,86 @@ def is_path_allowed(project_path: str) -> bool:
     Check if a project path is allowed based on the allowed folders list.
     Path must be a subfolder or direct match of an allowed folder.
     """
-
-    global ALLOWED_FOLDERS
     if not project_path:
-        print(f"Warning: not project_path: {project_path}", file=sys.stderr)
+        print(f"Debug: Empty project_path provided", file=sys.stderr)
         return False
-    
+
     # If no allowed folders are specified, nothing is allowed
     if not ALLOWED_FOLDERS:
-        print(f"Warning: ALLOWED_FOLDERS is empty, denying access", file=sys.stderr)
+        print(f"Debug: ALLOWED_FOLDERS is empty, denying access", file=sys.stderr)
         return False
-    
+
     # Normalize the path
     project_path = os.path.abspath(project_path).rstrip("/")
-    
+
     # Check if path is in allowed folders
-    print(f"Warning: Normalized project_path: {project_path}", file=sys.stderr)
+    print(f"Debug: Checking normalized project_path: {project_path}", file=sys.stderr)
     for allowed_folder in ALLOWED_FOLDERS:
         # Direct match
         if project_path == allowed_folder:
-            print(f"direct match to {allowed_folder}", file=sys.stderr)
+            print(f"Debug: Direct match to {allowed_folder}", file=sys.stderr)
             return True
-        
+
         # Path is a subfolder
         if project_path.startswith(allowed_folder + "/"):
-            print(f"Match to startswith {allowed_folder}", file=sys.stderr)
+            print(f"Debug: Subfolder match to {allowed_folder}", file=sys.stderr)
             return True
-        print(f"no match of {project_path} with allowed folder {allowed_folder}", file=sys.stderr)
+    print(f"Debug: No match found for {project_path}", file=sys.stderr)
     return False
+
+def validate_and_normalize_project_path(project_path: str, function_name: str) -> str:
+    """
+    Validate and normalize a project path for Xcode operations.
+
+    Args:
+        project_path: The project path to validate
+        function_name: Name of calling function for error messages
+
+    Returns:
+        Normalized project path
+
+    Raises:
+        InvalidParameterError: If validation fails
+        AccessDeniedError: If path access is denied
+    """
+    # Basic validation
+    if not project_path or project_path.strip() == "":
+        raise InvalidParameterError("project_path cannot be empty")
+
+    project_path = project_path.strip()
+
+    # Verify path ends with .xcodeproj or .xcworkspace
+    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
+        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
+
+    # Show notification
+    show_notification("Xcode MCP", f"{function_name} {os.path.basename(project_path)}")
+
+    # Security check
+    if not is_path_allowed(project_path):
+        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
+
+    # Check if the path exists
+    if not os.path.exists(project_path):
+        raise InvalidParameterError(f"Project path does not exist: {project_path}")
+
+    # Normalize the path to resolve symlinks
+    return os.path.realpath(project_path)
+
+def escape_applescript_string(s: str) -> str:
+    """
+    Escape a string for safe use in AppleScript.
+
+    Args:
+        s: String to escape
+
+    Returns:
+        Escaped string safe for AppleScript
+    """
+    # Escape backslashes first, then quotes
+    s = s.replace("\\", "\\\\")
+    s = s.replace('"', '\\"')
+    return s
 
 # Initialize the MCP server
 mcp = FastMCP("Xcode MCP Server",
@@ -144,73 +195,224 @@ mcp = FastMCP("Xcode MCP Server",
         see any results immediately and a subsequent build and run by the user will
         happen almost instantly for the user.
 
-        You might start with `get_frontmost_project` to see if the user currently
-        has an Xcode project already open.
-
-        You can call `get_xcode_projects` to find Xcode project (.xcodeproj) and
-        Xcode workspace (.xcworkspace) folders under a given root folder.
-
-        You can call `get_project_schemes` to get the build scheme names for a given
-        .xcodeproj or .xcworkspace.
-
-        Call build_project to build the project and get back the first 25 lines of
-        error output. `build_project` will default to the active scheme if none is provided.
+        Available tools:
+        - get_xcode_projects: Find Xcode project (.xcodeproj) and workspace (.xcworkspace) files
+        - get_project_hierarchy: Get the file structure of a project
+        - get_project_schemes: List available build schemes for a project
+        - build_project: Build the project (defaults to active scheme if none specified)
+        - run_project: Run the project and capture console output
+        - get_build_errors: Get errors from the last build
+        - clean_project: Clean build artifacts
+        - stop_project: Stop any currently running build or run operation
+        - get_runtime_output: Get console output from the most recent run
     """
 )
-
-# Helper functions for Xcode interaction
-def get_frontmost_project() -> str:
-    """
-    Get the path to the frontmost Xcode project/workspace.
-    Returns empty string if no project is open.
-    """
-    script = '''
-    tell application "Xcode"
-        if it is running then
-            try
-                tell application "System Events"
-                    tell process "Xcode"
-                        set frontWindow to name of front window
-                    end tell
-                end tell
-                
-                set docPath to ""
-                try
-                    set docPath to path of document 1
-                end try
-                
-                return docPath
-            on error errMsg
-                return "ERROR: " & errMsg
-            end try
-        else
-            return "ERROR: Xcode is not running"
-        end if
-    end tell
-    '''
-    try:
-        result = subprocess.run(['osascript', '-e', script], 
-                               capture_output=True, text=True, check=True)
-        output = result.stdout.strip()
-        
-        # Check if we got an error message from our AppleScript
-        if output.startswith("ERROR:"):
-            print(f"AppleScript error: {output}")
-            return ""
-        
-        return output
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing AppleScript: {e.stderr}")
-        return ""
 
 def run_applescript(script: str) -> Tuple[bool, str]:
     """Run an AppleScript and return success status and output"""
     try:
-        result = subprocess.run(['osascript', '-e', script], 
+        result = subprocess.run(['osascript', '-e', script],
                                capture_output=True, text=True, check=True)
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as e:
         return False, e.stderr.strip()
+
+def extract_console_logs_from_xcresult(xcresult_path: str,
+                                      max_lines: int = 100,
+                                      regex_filter: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    Extract console logs from an xcresult file.
+
+    Args:
+        xcresult_path: Path to the .xcresult file
+        max_lines: Maximum number of lines to return
+        regex_filter: Optional regex pattern to filter output lines
+
+    Returns:
+        Tuple of (success, output_or_error_message)
+    """
+    # The xcresult file may still be finalizing, so retry a few times
+    max_retries = 3
+    retry_delay = 2
+
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"Retry attempt {attempt + 1}/{max_retries} after {retry_delay}s delay...", file=sys.stderr)
+                time.sleep(retry_delay)
+
+            result = subprocess.run(
+                ['xcrun', 'xcresulttool', 'get', 'log',
+                 '--path', xcresult_path,
+                 '--type', 'console'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                if "root ID is missing" in result.stderr and attempt < max_retries - 1:
+                    print(f"xcresult not ready yet: {result.stderr.strip()}", file=sys.stderr)
+                    continue
+                return False, f"Failed to extract console logs: {result.stderr}"
+
+            # Success - break out of retry loop
+            break
+
+        except subprocess.TimeoutExpired:
+            if attempt < max_retries - 1:
+                continue
+            return False, "Timeout extracting console logs"
+        except Exception as e:
+            if attempt < max_retries - 1:
+                continue
+            return False, f"Error extracting console logs: {e}"
+
+    # Parse the JSON output
+    try:
+        log_data = json.loads(result.stdout)
+
+        # Extract console content from items
+        console_lines = []
+        for item in log_data.get('items', []):
+            content = item.get('content', '').strip()
+            if content:
+                # Apply regex filter if provided and not empty
+                if regex_filter and regex_filter.strip():
+                    try:
+                        if re.search(regex_filter, content):
+                            console_lines.append(content)
+                    except re.error as e:
+                        raise InvalidParameterError(f"Invalid regex pattern: {e}")
+                else:
+                    console_lines.append(content)
+
+        # Limit to max_lines (take the last N lines)
+        if len(console_lines) > max_lines:
+            console_lines = console_lines[-max_lines:]
+
+        if not console_lines:
+            return True, ""  # No output is not an error
+
+        return True, "\n".join(console_lines)
+
+    except json.JSONDecodeError as e:
+        return False, f"Failed to parse console logs: {e}"
+    except Exception as e:
+        return False, f"Error processing console logs: {e}"
+
+def extract_build_errors_and_warnings(build_log: str,
+                                     include_warnings: Optional[bool] = None) -> str:
+    """
+    Extract and format errors and warnings from a build log.
+
+    Args:
+        build_log: The raw build log output from Xcode
+        include_warnings: Include warnings in output. If not provided, uses global setting.
+
+    Returns:
+        Formatted string with errors/warnings, limited to 25 lines
+    """
+    # Determine whether to include warnings
+    # Command-line flags override function parameter (user control > LLM control)
+    if BUILD_WARNINGS_FORCED is not None:
+        # User explicitly set a command-line flag to force behavior
+        show_warnings = BUILD_WARNINGS_FORCED
+    else:
+        # No forcing, use function parameter or default
+        show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
+
+    output_lines = build_log.split("\n")
+    error_lines = []
+    warning_lines = []
+
+    # Single iteration through output lines
+    for line in output_lines:
+        line_lower = line.lower()
+        if "error" in line_lower:
+            error_lines.append(line)
+        elif show_warnings and "warning" in line_lower:
+            warning_lines.append(line)
+
+    # Store total counts
+    total_errors = len(error_lines)
+    total_warnings = len(warning_lines)
+
+    # Combine errors first, then warnings
+    important_lines = error_lines + warning_lines
+
+    # Calculate what we're actually showing
+    displayed_errors = min(total_errors, 25)
+    displayed_warnings = 0 if total_errors >= 25 else min(total_warnings, 25 - total_errors)
+
+    # Limit to first 25 important lines
+    if len(important_lines) > 25:
+        important_lines = important_lines[:25]
+
+    important_list = "\n".join(important_lines)
+
+    # Build appropriate message based on what we found
+    if error_lines and warning_lines:
+        # Build detailed count message
+        count_msg = f"Build failed with {total_errors} error(s) and {total_warnings} warning(s)."
+        if total_errors + total_warnings > 25:
+            if displayed_warnings == 0:
+                count_msg += f" Showing first {displayed_errors} errors."
+            else:
+                count_msg += f" Showing {displayed_errors} error(s) and first {displayed_warnings} warning(s)."
+        return f"{count_msg}\n{important_list}"
+    elif error_lines:
+        count_msg = f"Build failed with {total_errors} error(s)."
+        if total_errors > 25:
+            count_msg += f" Showing first 25 errors."
+        return f"{count_msg}\n{important_list}"
+    elif warning_lines:
+        count_msg = f"Build completed with {total_warnings} warning(s)."
+        if total_warnings > 25:
+            count_msg += f" Showing first 25 warnings."
+        return f"{count_msg}\n{important_list}"
+    else:
+        return "Build failed (no specific errors or warnings found in output)"
+
+def find_xcresult_for_project(project_path: str) -> Optional[str]:
+    """
+    Find the most recent xcresult file for a given project.
+
+    Args:
+        project_path: Path to the .xcodeproj or .xcworkspace
+
+    Returns:
+        Path to the most recent xcresult file, or None if not found
+    """
+    # Normalize and get project name
+    normalized_path = os.path.realpath(project_path)
+    project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
+
+    # Find the most recent xcresult file in DerivedData
+    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
+
+    # Look for directories matching the project name
+    # DerivedData directories typically have format: ProjectName-randomhash
+    try:
+        for derived_dir in os.listdir(derived_data_base):
+            # More precise matching: must start with project name followed by a dash
+            if derived_dir.startswith(project_name + "-"):
+                logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", "Launch")
+                if os.path.exists(logs_dir):
+                    # Find the most recent .xcresult file
+                    xcresult_files = []
+                    for f in os.listdir(logs_dir):
+                        if f.endswith('.xcresult'):
+                            full_path = os.path.join(logs_dir, f)
+                            xcresult_files.append((os.path.getmtime(full_path), full_path))
+
+                    if xcresult_files:
+                        xcresult_files.sort(reverse=True)
+                        return xcresult_files[0][1]
+    except Exception as e:
+        print(f"Error searching for xcresult: {e}", file=sys.stderr)
+
+    return None
 
 def show_notification(title: str, message: str):
     """Show a macOS notification if notifications are enabled"""
@@ -303,33 +505,16 @@ def get_xcode_projects(search_path: str = "") -> str:
 def get_project_hierarchy(project_path: str) -> str:
     """
     Get the hierarchy of the specified Xcode project or workspace.
-    
+
     Args:
         project_path: Path to an Xcode project/workspace directory, which must
         end in '.xcodeproj' or '.xcworkspace' and must exist.
-        
+
     Returns:
         A string representation of the project hierarchy
     """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-    
-    project_path = project_path.strip()
-    
-    # Verify path ends with .xcodeproj or .xcworkspace
-    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
-        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
-    
-    show_notification("Xcode MCP", f"Getting hierarchy for {os.path.basename(project_path)}")
-    
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
-    # Check if the path exists
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
+    # Validate and normalize path
+    project_path = validate_and_normalize_project_path(project_path, "Getting hierarchy for")
     
     # Get the parent directory to scan
     parent_dir = os.path.dirname(project_path)
@@ -339,13 +524,10 @@ def get_project_hierarchy(project_path: str) -> str:
     def build_hierarchy(path: str, prefix: str = "", is_last: bool = True, base_path: str = "") -> List[str]:
         """Recursively build a visual hierarchy of files and folders"""
         lines = []
-        
+
         if not base_path:
             base_path = path
-            
-        # Get relative path for display
-        rel_path = os.path.relpath(path, os.path.dirname(base_path))
-        
+
         # Add current item
         if path != base_path:
             connector = "└── " if is_last else "├── "
@@ -404,40 +586,24 @@ def get_project_hierarchy(project_path: str) -> str:
 def get_project_schemes(project_path: str) -> str:
     """
     Get the available build schemes for the specified Xcode project or workspace.
-    
+
     Args:
         project_path: Path to an Xcode project/workspace directory, which must
         end in '.xcodeproj' or '.xcworkspace' and must exist.
-        
+
     Returns:
         A newline-separated list of scheme names, with the active scheme listed first.
         If no schemes are found, returns an empty string.
     """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-    
-    project_path = project_path.strip()
-    
-    # Verify path ends with .xcodeproj or .xcworkspace
-    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
-        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
-    
-    show_notification("Xcode MCP", f"Getting schemes for {os.path.basename(project_path)}")
-    
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
-    # Check if the path exists
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-    
+    # Validate and normalize path
+    normalized_path = validate_and_normalize_project_path(project_path, "Getting schemes for")
+    escaped_path = escape_applescript_string(normalized_path)
+
     script = f'''
     tell application "Xcode"
-        open "{project_path}"
-        
-        set workspaceDoc to first workspace document whose path is "{project_path}"
+        open "{escaped_path}"
+
+        set workspaceDoc to first workspace document whose path is "{escaped_path}"
         
         -- Wait for it to load
         repeat 60 times
@@ -499,7 +665,7 @@ def build_project(project_path: str,
     Build the specified Xcode project or workspace.
 
     Args:
-        project_path: Path to an Xcode project workspace or directory.
+        project_path: Path to an Xcode project or workspace directory.
         scheme: Name of the scheme to build. If not provided, uses the active scheme.
         include_warnings: Include warnings in build output. If not provided, uses global setting.
 
@@ -507,36 +673,22 @@ def build_project(project_path: str,
         On success, returns "Build succeeded with 0 errors."
         On failure, returns the first (up to) 25 error/warning lines from the build log.
     """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-
-    project_path = project_path.strip()
-
     # Validate include_warnings parameter
     if include_warnings is not None and not isinstance(include_warnings, bool):
         raise InvalidParameterError("include_warnings must be a boolean value")
 
-    # Verify path ends with .xcodeproj or .xcworkspace
-    if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
-        raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
-
+    # Validate and normalize path
     scheme_desc = scheme if scheme else "active scheme"
-    show_notification("Xcode MCP", f"Building {scheme_desc} in {os.path.basename(project_path)}")
-    
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-    
+    normalized_path = validate_and_normalize_project_path(project_path, f"Building {scheme_desc} in")
+    escaped_path = escape_applescript_string(normalized_path)
+
     # Build the AppleScript
     if scheme:
         # Use provided scheme
+        escaped_scheme = escape_applescript_string(scheme)
         script = f'''
-set projectPath to "{project_path}"
-set schemeName to "{scheme}"
+set projectPath to "{escaped_path}"
+set schemeName to "{escaped_scheme}"
 
 tell application "Xcode"
         -- 1. Open the project file
@@ -579,7 +731,7 @@ end tell
     else:
         # Use active scheme
         script = f'''
-set projectPath to "{project_path}"
+set projectPath to "{escaped_path}"
 
 tell application "Xcode"
         -- 1. Open the project file
@@ -623,66 +775,8 @@ end tell
         if output == "Build succeeded.":
             return "Build succeeded with 0 errors."
         else:
-            # Determine whether to include warnings
-            # Command-line flags override function parameter (user control > LLM control)
-            if BUILD_WARNINGS_FORCED is not None:
-                # User explicitly set a command-line flag to force behavior
-                show_warnings = BUILD_WARNINGS_FORCED
-            else:
-                # No forcing, use function parameter or default
-                show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
-
-            output_lines = output.split("\n")
-            error_lines = []
-            warning_lines = []
-
-            # Single iteration through output lines
-            for line in output_lines:
-                line_lower = line.lower()
-                if "error" in line_lower:
-                    error_lines.append(line)
-                elif show_warnings and "warning" in line_lower:
-                    warning_lines.append(line)
-
-            # Store total counts
-            total_errors = len(error_lines)
-            total_warnings = len(warning_lines)
-
-            # Combine errors first, then warnings
-            important_lines = error_lines + warning_lines
-
-            # Calculate what we're actually showing
-            displayed_errors = min(total_errors, 25)
-            displayed_warnings = 0 if total_errors >= 25 else min(total_warnings, 25 - total_errors)
-
-            # Limit to first 25 important lines
-            if len(important_lines) > 25:
-                important_lines = important_lines[:25]
-
-            important_list = "\n".join(important_lines)
-
-            # Build appropriate message based on what we found
-            if error_lines and warning_lines:
-                # Build detailed count message
-                count_msg = f"Build failed with {total_errors} error(s) and {total_warnings} warning(s)."
-                if total_errors + total_warnings > 25:
-                    if displayed_warnings == 0:
-                        count_msg += f" Showing first {displayed_errors} errors."
-                    else:
-                        count_msg += f" Showing {displayed_errors} error(s) and first {displayed_warnings} warning(s)."
-                return f"{count_msg}\n{important_list}"
-            elif error_lines:
-                count_msg = f"Build failed with {total_errors} error(s)."
-                if total_errors > 25:
-                    count_msg += f" Showing first 25 errors."
-                return f"{count_msg}\n{important_list}"
-            elif warning_lines:
-                count_msg = f"Build completed with {total_warnings} warning(s)."
-                if total_warnings > 25:
-                    count_msg += f" Showing first 25 warnings."
-                return f"{count_msg}\n{important_list}"
-            else:
-                return "Build failed (no specific errors or warnings found in output)"
+            # Use the shared helper to extract and format errors/warnings
+            return extract_build_errors_and_warnings(output, include_warnings)
     else:
         raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")
 
@@ -705,47 +799,27 @@ def run_project(project_path: str,
     Returns:
         Console output from the run, or status message if still running
     """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-
+    # Validate other parameters
     if wait_seconds < 0:
         raise InvalidParameterError("wait_seconds must be non-negative")
 
     if max_lines < 1:
         raise InvalidParameterError("max_lines must be at least 1")
 
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-
-    # Normalize the project path to resolve symlinks
-    normalized_path = os.path.realpath(project_path)
+    # Validate and normalize path
+    scheme_desc = scheme if scheme else "active scheme"
+    normalized_path = validate_and_normalize_project_path(project_path, f"Running {scheme_desc} in")
+    escaped_path = escape_applescript_string(normalized_path)
 
     # Build the AppleScript that runs and polls in one script
     if scheme:
+        escaped_scheme = escape_applescript_string(scheme)
         script = f'''
         tell application "Xcode"
-            open "{normalized_path}"
+            open "{escaped_path}"
 
-            -- Give Xcode a moment to process the open command
-            delay 1
-
-            -- Find the workspace document by path
-            set workspaceDoc to missing value
-            repeat with doc in workspace documents
-                if path of doc is "{normalized_path}" then
-                    set workspaceDoc to doc
-                    exit repeat
-                end if
-            end repeat
-
-            if workspaceDoc is missing value then
-                error "Could not find workspace document for path: {normalized_path}"
-            end if
+            -- Get the workspace document
+            set workspaceDoc to first workspace document whose path is "{escaped_path}"
 
             -- Wait for it to load
             repeat 60 times
@@ -758,7 +832,7 @@ def run_project(project_path: str,
             end if
 
             -- Set the active scheme
-            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is "{scheme}")
+            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is "{escaped_scheme}")
 
             -- Run
             set actionResult to run workspaceDoc
@@ -782,23 +856,10 @@ def run_project(project_path: str,
     else:
         script = f'''
         tell application "Xcode"
-            open "{normalized_path}"
+            open "{escaped_path}"
 
-            -- Give Xcode a moment to process the open command
-            delay 1
-
-            -- Find the workspace document by path
-            set workspaceDoc to missing value
-            repeat with doc in workspace documents
-                if path of doc is "{normalized_path}" then
-                    set workspaceDoc to doc
-                    exit repeat
-                end if
-            end repeat
-
-            if workspaceDoc is missing value then
-                error "Could not find workspace document for path: {normalized_path}"
-            end if
+            -- Get the workspace document
+            set workspaceDoc to first workspace document whose path is "{escaped_path}"
 
             -- Wait for it to load
             repeat 60 times
@@ -831,49 +892,25 @@ def run_project(project_path: str,
         '''
 
     print(f"Running and waiting up to {wait_seconds} seconds for completion...", file=sys.stderr)
-    success, poll_output = run_applescript(script)
+    success, output = run_applescript(script)
 
     if not success:
-        raise XCodeMCPError(f"Run failed: {poll_output}")
+        raise XCodeMCPError(f"Run failed: {output}")
 
     # Parse the result
-    print(f"Raw output: '{poll_output}'", file=sys.stderr)
-    parts = poll_output.split("|")
+    print(f"Raw output: '{output}'", file=sys.stderr)
+    parts = output.split("|")
 
     if len(parts) != 2:
-        raise XCodeMCPError(f"Unexpected output format: {poll_output}")
+        raise XCodeMCPError(f"Unexpected output format: {output}")
 
     completed = parts[0].strip().lower() == "true"
     final_status = parts[1].strip()
 
     print(f"Run completed={completed}, status={final_status}", file=sys.stderr)
 
-    # Get the project/workspace name for finding DerivedData
-    project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
-
-    # Find the most recent xcresult file in DerivedData
-    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
-    xcresult_path = None
-
-    # Look for directories matching the project name
-    try:
-        for derived_dir in os.listdir(derived_data_base):
-            if derived_dir.startswith(project_name):
-                logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", "Launch")
-                if os.path.exists(logs_dir):
-                    # Find the most recent .xcresult file
-                    xcresult_files = []
-                    for f in os.listdir(logs_dir):
-                        if f.endswith('.xcresult'):
-                            full_path = os.path.join(logs_dir, f)
-                            xcresult_files.append((os.path.getmtime(full_path), full_path))
-
-                    if xcresult_files:
-                        xcresult_files.sort(reverse=True)
-                        xcresult_path = xcresult_files[0][1]
-                        break
-    except Exception as e:
-        print(f"Error searching for xcresult: {e}", file=sys.stderr)
+    # Find the most recent xcresult file for this project
+    xcresult_path = find_xcresult_for_project(project_path)
 
     if not xcresult_path:
         if completed:
@@ -883,89 +920,27 @@ def run_project(project_path: str,
 
     print(f"Found xcresult: {xcresult_path}", file=sys.stderr)
 
-    # Extract console logs using xcresulttool
-    # The xcresult file may still be finalizing, so retry a few times
-    max_retries = 3
-    retry_delay = 2
+    # Extract console logs
+    success, console_output = extract_console_logs_from_xcresult(xcresult_path, max_lines, regex_filter)
 
-    for attempt in range(max_retries):
-        try:
-            if attempt > 0:
-                print(f"Retry attempt {attempt + 1}/{max_retries} after {retry_delay}s delay...", file=sys.stderr)
-                time.sleep(retry_delay)
+    if not success:
+        return f"Run completed with status: {final_status}. {console_output}"
 
-            result = subprocess.run(
-                ['xcrun', 'xcresulttool', 'get', 'log',
-                 '--path', xcresult_path,
-                 '--type', 'console'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+    if not console_output:
+        return f"Run completed with status: {final_status}. No console output found (or filtered out)."
 
-            if result.returncode != 0:
-                if "root ID is missing" in result.stderr and attempt < max_retries - 1:
-                    print(f"xcresult not ready yet: {result.stderr.strip()}", file=sys.stderr)
-                    continue
-                return f"Run completed with status: {final_status}. Failed to extract console logs: {result.stderr}"
+    output_summary = f"Run completed with status: {final_status}\n"
+    output_summary += f"Console output ({len(console_output.splitlines())} lines):\n"
+    output_summary += "=" * 60 + "\n"
+    output_summary += console_output
 
-            # Success - break out of retry loop
-            break
-
-        except subprocess.TimeoutExpired:
-            if attempt < max_retries - 1:
-                continue
-            return f"Run completed with status: {final_status}. Timeout extracting console logs."
-        except Exception as e:
-            if attempt < max_retries - 1:
-                continue
-            return f"Run completed with status: {final_status}. Error extracting console logs: {e}"
-
-    # Parse the JSON output
-    try:
-        log_data = json.loads(result.stdout)
-
-        # Extract console content from items
-        console_lines = []
-        for item in log_data.get('items', []):
-            content = item.get('content', '').strip()
-            if content:
-                # Apply regex filter if provided and not empty
-                if regex_filter and regex_filter.strip():
-                    try:
-                        if re.search(regex_filter, content):
-                            console_lines.append(content)
-                    except re.error as e:
-                        raise InvalidParameterError(f"Invalid regex pattern: {e}")
-                else:
-                    console_lines.append(content)
-
-        # Limit to max_lines
-        if len(console_lines) > max_lines:
-            console_lines = console_lines[-max_lines:]
-
-        if not console_lines:
-            return f"Run completed with status: {final_status}. No console output found (or filtered out)."
-
-        output_summary = f"Run completed with status: {final_status}\n"
-        output_summary += f"Console output ({len(console_lines)} lines):\n"
-        output_summary += "=" * 60 + "\n"
-        output_summary += "\n".join(console_lines)
-
-        return output_summary
-
-    except subprocess.TimeoutExpired:
-        return f"Run completed with status: {final_status}. Timeout extracting console logs."
-    except json.JSONDecodeError as e:
-        return f"Run completed with status: {final_status}. Failed to parse console logs: {e}"
-    except Exception as e:
-        return f"Run completed with status: {final_status}. Error extracting console logs: {e}"
+    return output_summary
 
 @mcp.tool()
 def get_build_errors(project_path: str,
                     include_warnings: Optional[bool] = None) -> str:
     """
-    Get the build errors for the specified Xcode project or workspace.
+    Get the build errors from the last build for the specified Xcode project or workspace.
 
     Args:
         project_path: Path to an Xcode project or workspace directory.
@@ -974,154 +949,23 @@ def get_build_errors(project_path: str,
     Returns:
         A string containing the build errors/warnings or a message if there are none
     """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-
     # Validate include_warnings parameter
     if include_warnings is not None and not isinstance(include_warnings, bool):
         raise InvalidParameterError("include_warnings must be a boolean value")
 
-    # Determine whether to include warnings
-    # Command-line flags override function parameter (user control > LLM control)
-    if BUILD_WARNINGS_FORCED is not None:
-        # User explicitly set a command-line flag to force behavior
-        show_warnings = BUILD_WARNINGS_FORCED
-    else:
-        # No forcing, use function parameter or default
-        show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
+    # Validate and normalize path
+    normalized_path = validate_and_normalize_project_path(project_path, "Getting build errors for")
+    escaped_path = escape_applescript_string(normalized_path)
 
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-
-    # TODO: Implement error retrieval using AppleScript or by parsing logs
+    # Get the last build log from the workspace
     script = f'''
     tell application "Xcode"
-        open "{project_path}"
-        delay 1
-        set frontWindow to front window
-        tell frontWindow
-            set currentWorkspace to workspace
-            set issuesList to get issues
-            set issuesText to ""
-            set issueCount to 0
-            
-            repeat with anIssue in issuesList
-                if issueCount ≥ 25 then exit repeat
-                set issuesText to issuesText & "- " & message of anIssue & "\n"
-                set issueCount to issueCount + 1
-            end repeat
-            
-            return issuesText
-        end tell
-    end tell
-    '''
-    
-    # This script syntax may need to be adjusted based on actual AppleScript capabilities
-    success, output = run_applescript(script)
-    
-    if success and output:
-        return output
-    elif success:
-        return "No build errors found."
-    else:
-        raise XCodeMCPError(f"Failed to retrieve build errors: {output}")
+        open "{escaped_path}"
 
-@mcp.tool()
-def clean_project(project_path: str) -> str:
-    """
-    Clean the specified Xcode project or workspace.
-    
-    Args:
-        project_path: Path to an Xcode project/workspace directory.
-        
-    Returns:
-        Output message
-    """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-    
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-    
-    # TODO: Implement clean command using AppleScript
-    script = f'''
-    tell application "Xcode"
-        open "{project_path}"
-        delay 1
-        set frontWindow to front window
-        tell frontWindow
-            set currentWorkspace to workspace
-            clean currentWorkspace
-        end tell
-    end tell
-    '''
-    
-    success, output = run_applescript(script)
-    
-    if success:
-        return "Clean completed successfully"
-    else:
-        raise XCodeMCPError(f"Clean failed: {output}")
+        -- Get the workspace document
+        set workspaceDoc to first workspace document whose path is "{escaped_path}"
 
-@mcp.tool()
-def get_runtime_output(project_path: str,
-                      max_lines: int = 25) -> str:
-    """
-    Get the runtime output from the console for the specified Xcode project.
-
-    Args:
-        project_path: Path to an Xcode project/workspace directory.
-        max_lines: Maximum number of lines to retrieve. Defaults to 25.
-
-    Returns:
-        Console output as a string
-    """
-    # Validate input
-    if not project_path or project_path.strip() == "":
-        raise InvalidParameterError("project_path cannot be empty")
-
-    # Security check
-    if not is_path_allowed(project_path):
-        raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-
-    if not os.path.exists(project_path):
-        raise InvalidParameterError(f"Project path does not exist: {project_path}")
-
-    # Normalize the project path to resolve symlinks
-    normalized_path = os.path.realpath(project_path)
-
-    # Get the active scheme to determine the product name
-    script = f'''
-    tell application "Xcode"
-        open "{normalized_path}"
-
-        -- Give Xcode a moment to process the open command
-        delay 1
-
-        -- Find the workspace document by path
-        set workspaceDoc to missing value
-        repeat with doc in workspace documents
-            if path of doc is "{normalized_path}" then
-                set workspaceDoc to doc
-                exit repeat
-            end if
-        end repeat
-
-        if workspaceDoc is missing value then
-            error "Could not find workspace document for path: {normalized_path}"
-        end if
-
-        -- Wait for it to load
+        -- Wait for it to load (timeout after ~30 seconds)
         repeat 60 times
             if loaded of workspaceDoc is true then exit repeat
             delay 0.5
@@ -1131,71 +975,174 @@ def get_runtime_output(project_path: str,
             error "Xcode workspace did not load in time."
         end if
 
-        -- Get active scheme name (which usually matches product name)
-        set activeScheme to name of active scheme of workspaceDoc
-
-        -- Get platform
-        set destPlatform to ""
+        -- Try to get the last build log
         try
-            set destPlatform to platform of active run destination of workspaceDoc
-        on error
-            set destPlatform to "unknown"
-        end try
+            -- Get the most recent build action result
+            set lastBuildResult to last build action result of workspaceDoc
 
-        return activeScheme & "|" & destPlatform
+            -- Get its build log
+            return build log of lastBuildResult
+        on error
+            -- No build has been performed yet
+            return ""
+        end try
     end tell
     '''
 
     success, output = run_applescript(script)
 
+    if success:
+        if output == "":
+            return "No build has been performed yet for this project."
+        else:
+            # Use the shared helper to extract and format errors/warnings
+            return extract_build_errors_and_warnings(output, include_warnings)
+    else:
+        raise XCodeMCPError(f"Failed to retrieve build errors: {output}")
+
+@mcp.tool()
+def clean_project(project_path: str) -> str:
+    """
+    Clean the specified Xcode project or workspace.
+
+    Args:
+        project_path: Path to an Xcode project/workspace directory.
+
+    Returns:
+        Output message
+    """
+    # Validate and normalize path
+    normalized_path = validate_and_normalize_project_path(project_path, "Cleaning")
+    escaped_path = escape_applescript_string(normalized_path)
+
+    # AppleScript to clean the project
+    script = f'''
+    tell application "Xcode"
+        open "{escaped_path}"
+
+        -- Get the workspace document
+        set workspaceDoc to first workspace document whose path is "{escaped_path}"
+
+        -- Wait for it to load (timeout after ~30 seconds)
+        repeat 60 times
+            if loaded of workspaceDoc is true then exit repeat
+            delay 0.5
+        end repeat
+
+        if loaded of workspaceDoc is false then
+            error "Xcode workspace did not load in time."
+        end if
+
+        -- Clean the workspace
+        clean workspaceDoc
+
+        return "Clean completed successfully"
+    end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if success:
+        return output
+    else:
+        raise XCodeMCPError(f"Clean failed: {output}")
+
+@mcp.tool()
+def stop_project(project_path: str) -> str:
+    """
+    Stop the currently running build or run operation for the specified Xcode project or workspace.
+
+    Args:
+        project_path: Path to an Xcode project/workspace directory, which must
+        end in '.xcodeproj' or '.xcworkspace' and must exist.
+
+    Returns:
+        A message indicating whether the stop was successful
+    """
+    # Validate and normalize path
+    normalized_path = validate_and_normalize_project_path(project_path, "Stopping build/run for")
+    escaped_path = escape_applescript_string(normalized_path)
+
+    # AppleScript to stop the current build or run operation
+    script = f'''
+    tell application "Xcode"
+        -- Try to get the workspace document
+        try
+            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+        on error
+            return "ERROR: No open workspace found for path: {escaped_path}"
+        end try
+
+        -- Stop the current action (build or run)
+        try
+            stop workspaceDoc
+            return "Successfully stopped the current build/run operation"
+        on error errMsg
+            return "ERROR: " & errMsg
+        end try
+    end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if success:
+        if output.startswith("ERROR:"):
+            # Extract the error message
+            error_msg = output[6:].strip()
+            if "No open workspace found" in error_msg:
+                raise InvalidParameterError(f"Project is not currently open in Xcode: {project_path}")
+            else:
+                raise XCodeMCPError(f"Failed to stop build/run: {error_msg}")
+        else:
+            return output
+    else:
+        raise XCodeMCPError(f"Failed to stop build/run for {project_path}: {output}")
+
+@mcp.tool()
+def get_runtime_output(project_path: str,
+                      max_lines: int = 25,
+                      regex_filter: Optional[str] = None) -> str:
+    """
+    Get the runtime output from the console for the specified Xcode project.
+
+    Args:
+        project_path: Path to an Xcode project/workspace directory.
+        max_lines: Maximum number of lines to retrieve. Defaults to 25.
+        regex_filter: Optional regex pattern to filter console output lines.
+
+    Returns:
+        Console output as a string
+    """
+    # Validate other parameters
+    if max_lines < 1:
+        raise InvalidParameterError("max_lines must be at least 1")
+
+    # Validate and normalize path
+    project_path = validate_and_normalize_project_path(project_path, "Getting runtime output for")
+
+    # Find the most recent xcresult file for this project
+    xcresult_path = find_xcresult_for_project(project_path)
+
+    if not xcresult_path:
+        return "No xcresult file found. The project may not have been run recently, or the DerivedData may have been cleaned."
+
+    print(f"Found xcresult: {xcresult_path}", file=sys.stderr)
+
+    # Extract console logs
+    success, console_output = extract_console_logs_from_xcresult(xcresult_path, max_lines, regex_filter)
+
     if not success:
-        raise XCodeMCPError(f"Failed to get active scheme information: {output}")
+        raise XCodeMCPError(f"Failed to extract runtime output: {console_output}")
 
-    parts = output.split("|")
-    if len(parts) < 2:
-        raise XCodeMCPError(f"Unexpected output from Xcode: {output}")
+    if not console_output:
+        return "No console output found in the most recent run (or filtered out by regex)."
 
-    scheme_name = parts[0]
-    platform = parts[1]
+    # Return the console output with a header
+    output_lines = console_output.splitlines()
+    header = f"Console output from most recent run ({len(output_lines)} lines):\n"
+    header += "=" * 60 + "\n"
 
-    # Use scheme name as the product name (common convention)
-    product_name = scheme_name
-
-    # Get logs using macOS unified logging system
-    # This works for macOS apps, iOS simulators, and physical devices
-    try:
-        # Use 'log show' to get recent logs
-        # Filter by process name and get last 5 minutes of logs
-        log_result = subprocess.run(
-            ['log', 'show',
-             '--predicate', f'process == "{product_name}" OR processImagePath CONTAINS "{product_name}"',
-             '--style', 'syslog',
-             '--info', '--debug',
-             '--last', '5m'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        log_output = log_result.stdout.strip()
-
-        if not log_output:
-            return f"No recent console output found for '{product_name}' (platform: {platform}). The app may not have been run recently, or may not be producing log output."
-
-        # Split into lines and get the last max_lines
-        log_lines = log_output.split('\n')
-
-        if len(log_lines) > max_lines:
-            log_lines = log_lines[-max_lines:]
-
-        return '\n'.join(log_lines)
-
-    except subprocess.TimeoutExpired:
-        raise XCodeMCPError("Timeout while retrieving console logs")
-    except subprocess.CalledProcessError as e:
-        raise XCodeMCPError(f"Failed to retrieve console logs: {e.stderr}")
-    except Exception as e:
-        raise XCodeMCPError(f"Error retrieving runtime output: {str(e)}")
+    return header + console_output
 
 # Main entry point for the server
 if __name__ == "__main__":
