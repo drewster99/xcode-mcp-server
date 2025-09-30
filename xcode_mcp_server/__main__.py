@@ -4,6 +4,8 @@ import sys
 import subprocess
 import json
 import argparse
+import time
+import re
 from typing import Optional, Dict, List, Any, Tuple, Set
 from dataclasses import dataclass
 
@@ -685,48 +687,279 @@ end tell
         raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")
 
 @mcp.tool()
-def run_project(project_path: str, 
-               scheme: Optional[str] = None) -> str:
+def run_project(project_path: str,
+               wait_seconds: int,
+               scheme: Optional[str] = None,
+               max_lines: int = 100,
+               regex_filter: Optional[str] = None) -> str:
     """
-    Run the specified Xcode project or workspace.
-    
+    Run the specified Xcode project or workspace and wait for completion.
+
     Args:
         project_path: Path to an Xcode project/workspace directory.
+        wait_seconds: Maximum number of seconds to wait for the run to complete.
         scheme: Optional scheme to run. If not provided, uses the active scheme.
-        
+        max_lines: Maximum number of console log lines to return. Defaults to 100.
+        regex_filter: Optional regex pattern to filter console output lines.
+
     Returns:
-        Output message
+        Console output from the run, or status message if still running
     """
     # Validate input
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
-    
+
+    if wait_seconds < 0:
+        raise InvalidParameterError("wait_seconds must be non-negative")
+
+    if max_lines < 1:
+        raise InvalidParameterError("max_lines must be at least 1")
+
     # Security check
     if not is_path_allowed(project_path):
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
+
     if not os.path.exists(project_path):
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
-    
-    # TODO: Implement run command using AppleScript
-    script = f'''
-    tell application "Xcode"
-        open "{project_path}"
-        delay 1
-        set frontWindow to front window
-        tell frontWindow
-            set currentWorkspace to workspace
-            run currentWorkspace
+
+    # Normalize the project path to resolve symlinks
+    normalized_path = os.path.realpath(project_path)
+
+    # Build the AppleScript that runs and polls in one script
+    if scheme:
+        script = f'''
+        tell application "Xcode"
+            open "{normalized_path}"
+
+            -- Give Xcode a moment to process the open command
+            delay 1
+
+            -- Find the workspace document by path
+            set workspaceDoc to missing value
+            repeat with doc in workspace documents
+                if path of doc is "{normalized_path}" then
+                    set workspaceDoc to doc
+                    exit repeat
+                end if
+            end repeat
+
+            if workspaceDoc is missing value then
+                error "Could not find workspace document for path: {normalized_path}"
+            end if
+
+            -- Wait for it to load
+            repeat 60 times
+                if loaded of workspaceDoc is true then exit repeat
+                delay 0.5
+            end repeat
+
+            if loaded of workspaceDoc is false then
+                error "Xcode workspace did not load in time."
+            end if
+
+            -- Set the active scheme
+            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is "{scheme}")
+
+            -- Run
+            set actionResult to run workspaceDoc
+
+            -- Poll for completion
+            repeat {wait_seconds} times
+                if completed of actionResult is true then
+                    exit repeat
+                end if
+                delay 1
+            end repeat
+
+            -- Return completion status and status
+            if completed of actionResult is true then
+                return "true|" & (status of actionResult as text)
+            else
+                return "false|" & (status of actionResult as text)
+            end if
         end tell
-    end tell
-    '''
-    
-    success, output = run_applescript(script)
-    
-    if success:
-        return "Run started successfully"
+        '''
     else:
-        raise XCodeMCPError(f"Run failed to start: {output}")
+        script = f'''
+        tell application "Xcode"
+            open "{normalized_path}"
+
+            -- Give Xcode a moment to process the open command
+            delay 1
+
+            -- Find the workspace document by path
+            set workspaceDoc to missing value
+            repeat with doc in workspace documents
+                if path of doc is "{normalized_path}" then
+                    set workspaceDoc to doc
+                    exit repeat
+                end if
+            end repeat
+
+            if workspaceDoc is missing value then
+                error "Could not find workspace document for path: {normalized_path}"
+            end if
+
+            -- Wait for it to load
+            repeat 60 times
+                if loaded of workspaceDoc is true then exit repeat
+                delay 0.5
+            end repeat
+
+            if loaded of workspaceDoc is false then
+                error "Xcode workspace did not load in time."
+            end if
+
+            -- Run with active scheme
+            set actionResult to run workspaceDoc
+
+            -- Poll for completion
+            repeat {wait_seconds} times
+                if completed of actionResult is true then
+                    exit repeat
+                end if
+                delay 1
+            end repeat
+
+            -- Return completion status and status
+            if completed of actionResult is true then
+                return "true|" & (status of actionResult as text)
+            else
+                return "false|" & (status of actionResult as text)
+            end if
+        end tell
+        '''
+
+    print(f"Running and waiting up to {wait_seconds} seconds for completion...", file=sys.stderr)
+    success, poll_output = run_applescript(script)
+
+    if not success:
+        raise XCodeMCPError(f"Run failed: {poll_output}")
+
+    # Parse the result
+    print(f"Raw output: '{poll_output}'", file=sys.stderr)
+    parts = poll_output.split("|")
+
+    if len(parts) != 2:
+        raise XCodeMCPError(f"Unexpected output format: {poll_output}")
+
+    completed = parts[0].strip().lower() == "true"
+    final_status = parts[1].strip()
+
+    print(f"Run completed={completed}, status={final_status}", file=sys.stderr)
+
+    # Get the project/workspace name for finding DerivedData
+    project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
+
+    # Find the most recent xcresult file in DerivedData
+    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
+    xcresult_path = None
+
+    # Look for directories matching the project name
+    try:
+        for derived_dir in os.listdir(derived_data_base):
+            if derived_dir.startswith(project_name):
+                logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", "Launch")
+                if os.path.exists(logs_dir):
+                    # Find the most recent .xcresult file
+                    xcresult_files = []
+                    for f in os.listdir(logs_dir):
+                        if f.endswith('.xcresult'):
+                            full_path = os.path.join(logs_dir, f)
+                            xcresult_files.append((os.path.getmtime(full_path), full_path))
+
+                    if xcresult_files:
+                        xcresult_files.sort(reverse=True)
+                        xcresult_path = xcresult_files[0][1]
+                        break
+    except Exception as e:
+        print(f"Error searching for xcresult: {e}", file=sys.stderr)
+
+    if not xcresult_path:
+        if completed:
+            return f"Run completed with status: {final_status}. Could not find xcresult file to extract console logs."
+        else:
+            return f"Run did not complete within {wait_seconds} seconds (status: {final_status}). Could not extract console logs."
+
+    print(f"Found xcresult: {xcresult_path}", file=sys.stderr)
+
+    # Extract console logs using xcresulttool
+    # The xcresult file may still be finalizing, so retry a few times
+    max_retries = 3
+    retry_delay = 2
+
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"Retry attempt {attempt + 1}/{max_retries} after {retry_delay}s delay...", file=sys.stderr)
+                time.sleep(retry_delay)
+
+            result = subprocess.run(
+                ['xcrun', 'xcresulttool', 'get', 'log',
+                 '--path', xcresult_path,
+                 '--type', 'console'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                if "root ID is missing" in result.stderr and attempt < max_retries - 1:
+                    print(f"xcresult not ready yet: {result.stderr.strip()}", file=sys.stderr)
+                    continue
+                return f"Run completed with status: {final_status}. Failed to extract console logs: {result.stderr}"
+
+            # Success - break out of retry loop
+            break
+
+        except subprocess.TimeoutExpired:
+            if attempt < max_retries - 1:
+                continue
+            return f"Run completed with status: {final_status}. Timeout extracting console logs."
+        except Exception as e:
+            if attempt < max_retries - 1:
+                continue
+            return f"Run completed with status: {final_status}. Error extracting console logs: {e}"
+
+    # Parse the JSON output
+    try:
+        log_data = json.loads(result.stdout)
+
+        # Extract console content from items
+        console_lines = []
+        for item in log_data.get('items', []):
+            content = item.get('content', '').strip()
+            if content:
+                # Apply regex filter if provided and not empty
+                if regex_filter and regex_filter.strip():
+                    try:
+                        if re.search(regex_filter, content):
+                            console_lines.append(content)
+                    except re.error as e:
+                        raise InvalidParameterError(f"Invalid regex pattern: {e}")
+                else:
+                    console_lines.append(content)
+
+        # Limit to max_lines
+        if len(console_lines) > max_lines:
+            console_lines = console_lines[-max_lines:]
+
+        if not console_lines:
+            return f"Run completed with status: {final_status}. No console output found (or filtered out)."
+
+        output_summary = f"Run completed with status: {final_status}\n"
+        output_summary += f"Console output ({len(console_lines)} lines):\n"
+        output_summary += "=" * 60 + "\n"
+        output_summary += "\n".join(console_lines)
+
+        return output_summary
+
+    except subprocess.TimeoutExpired:
+        return f"Run completed with status: {final_status}. Timeout extracting console logs."
+    except json.JSONDecodeError as e:
+        return f"Run completed with status: {final_status}. Failed to parse console logs: {e}"
+    except Exception as e:
+        return f"Run completed with status: {final_status}. Error extracting console logs: {e}"
 
 @mcp.tool()
 def get_build_errors(project_path: str,
@@ -841,32 +1074,128 @@ def clean_project(project_path: str) -> str:
         raise XCodeMCPError(f"Clean failed: {output}")
 
 @mcp.tool()
-def get_runtime_output(project_path: str, 
+def get_runtime_output(project_path: str,
                       max_lines: int = 25) -> str:
     """
     Get the runtime output from the console for the specified Xcode project.
-    
+
     Args:
         project_path: Path to an Xcode project/workspace directory.
         max_lines: Maximum number of lines to retrieve. Defaults to 25.
-        
+
     Returns:
         Console output as a string
     """
     # Validate input
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
-    
+
     # Security check
     if not is_path_allowed(project_path):
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-    
+
     if not os.path.exists(project_path):
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
-    
-    # TODO: Implement console output retrieval
-    # This is a placeholder as you mentioned this functionality isn't available yet
-    raise XCodeMCPError("Runtime output retrieval not yet implemented")
+
+    # Normalize the project path to resolve symlinks
+    normalized_path = os.path.realpath(project_path)
+
+    # Get the active scheme to determine the product name
+    script = f'''
+    tell application "Xcode"
+        open "{normalized_path}"
+
+        -- Give Xcode a moment to process the open command
+        delay 1
+
+        -- Find the workspace document by path
+        set workspaceDoc to missing value
+        repeat with doc in workspace documents
+            if path of doc is "{normalized_path}" then
+                set workspaceDoc to doc
+                exit repeat
+            end if
+        end repeat
+
+        if workspaceDoc is missing value then
+            error "Could not find workspace document for path: {normalized_path}"
+        end if
+
+        -- Wait for it to load
+        repeat 60 times
+            if loaded of workspaceDoc is true then exit repeat
+            delay 0.5
+        end repeat
+
+        if loaded of workspaceDoc is false then
+            error "Xcode workspace did not load in time."
+        end if
+
+        -- Get active scheme name (which usually matches product name)
+        set activeScheme to name of active scheme of workspaceDoc
+
+        -- Get platform
+        set destPlatform to ""
+        try
+            set destPlatform to platform of active run destination of workspaceDoc
+        on error
+            set destPlatform to "unknown"
+        end try
+
+        return activeScheme & "|" & destPlatform
+    end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if not success:
+        raise XCodeMCPError(f"Failed to get active scheme information: {output}")
+
+    parts = output.split("|")
+    if len(parts) < 2:
+        raise XCodeMCPError(f"Unexpected output from Xcode: {output}")
+
+    scheme_name = parts[0]
+    platform = parts[1]
+
+    # Use scheme name as the product name (common convention)
+    product_name = scheme_name
+
+    # Get logs using macOS unified logging system
+    # This works for macOS apps, iOS simulators, and physical devices
+    try:
+        # Use 'log show' to get recent logs
+        # Filter by process name and get last 5 minutes of logs
+        log_result = subprocess.run(
+            ['log', 'show',
+             '--predicate', f'process == "{product_name}" OR processImagePath CONTAINS "{product_name}"',
+             '--style', 'syslog',
+             '--info', '--debug',
+             '--last', '5m'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        log_output = log_result.stdout.strip()
+
+        if not log_output:
+            return f"No recent console output found for '{product_name}' (platform: {platform}). The app may not have been run recently, or may not be producing log output."
+
+        # Split into lines and get the last max_lines
+        log_lines = log_output.split('\n')
+
+        if len(log_lines) > max_lines:
+            log_lines = log_lines[-max_lines:]
+
+        return '\n'.join(log_lines)
+
+    except subprocess.TimeoutExpired:
+        raise XCodeMCPError("Timeout while retrieving console logs")
+    except subprocess.CalledProcessError as e:
+        raise XCodeMCPError(f"Failed to retrieve console logs: {e.stderr}")
+    except Exception as e:
+        raise XCodeMCPError(f"Error retrieving runtime output: {str(e)}")
 
 # Main entry point for the server
 if __name__ == "__main__":
