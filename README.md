@@ -7,8 +7,10 @@ An MCP (Model Context Protocol) server for controlling and interacting with Xcod
 - Get project hierarchy
 - Build and run projects
 - Retrieve build errors and warnings
-- Get runtime output (placeholder)
+- Get runtime output from console logs
 - Clean projects
+- List booted iOS simulators
+- Take screenshots of running simulators
 
 ## Security
 
@@ -150,6 +152,8 @@ You'll get a permission prompt from Cursor and then one from macOS, and after th
    - "Run the app in /path/to/MyProject"
    - "What build errors are there in /path/to/MyProject.xcodeproj?"
    - "Clean the project at /path/to/MyProject"
+   - "List all booted simulators"
+   - "Take a screenshot of the running simulator"
 
 ### Parameter Format
 
