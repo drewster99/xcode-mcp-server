@@ -204,20 +204,6 @@ mcp = FastMCP("Xcode MCP Server",
         Call `build_project` to build the project and get back the first 25 lines of
         error (and/or potentially warning) output. `build_project` will default to the
         active scheme if none is provided.
-        
-        Available tools:
-        - get_xcode_projects: Find Xcode project (.xcodeproj) and workspace (.xcworkspace) files
-        - get_project_hierarchy: Get the file structure of a project
-        - get_project_schemes: List available build schemes for a project
-        - build_project: Build the project (defaults to active scheme if none specified)
-        - run_project: Run the project and capture console output
-        - get_build_errors: Get errors from the last build
-        - clean_project: Clean build artifacts
-        - stop_project: Stop any currently running build or run operation
-        - get_runtime_output: Get console output from the most recent run
-        - list_booted_simulators: List all currently booted iOS simulators
-        - take_screenshot_xcode: Take a screenshot of the Xcode window for a project
-        - take_simulator_screenshot: Take a screenshot of a booted simulator
     """
 )
 
@@ -457,14 +443,14 @@ def get_xcode_projects(search_path: str = "") -> str:
     Search the given search_path to find .xcodeproj (Xcode project) and
      .xcworkspace (Xcode workspace) paths. If the search_path is empty,
      all paths to which this tool has been granted access are searched.
-     Searching all paths to which this tool has been granted access can
+     Searching all paths to which this tool has been granted access
      uses `mdfind` (Spotlight indexing) to find the relevant files, and
      so will only return .xcodeproj and .xcworkspace folders that are
      indexed.
-    
+
     Args:
         search_path: Path to search. If empty, searches all allowed folders.
-        
+
     Returns:
         A string which is a newline-separated list of .xcodeproj and
         .xcworkspace paths found. If none are found, returns an empty string.
@@ -510,90 +496,288 @@ def get_xcode_projects(search_path: str = "") -> str:
     
     # Remove duplicates and sort
     unique_results = sorted(set(all_results))
-    
-    return '\n'.join(unique_results) if unique_results else ""
+
+    result = '\n'.join(unique_results) if unique_results else ""
+    if result:
+        result += "\n\nTo build a project, use `get_project_schemes` to see available build schemes, then call `build_project`."
+    return result
 
 
 @mcp.tool()
-def get_project_hierarchy(project_path: str) -> str:
+def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     """
-    Get a recursive directory tree for the specified Xcode project or workspace.
+    Get a visual tree of directories (folders only) in the specified path.
+
+    Shows the folder structure as a tree diagram with box-drawing characters.
+    Does not include individual files - use get_directory_listing for file details.
+
+    Special behavior: If directory_path ends with .xcodeproj or .xcworkspace,
+    the tree will show the parent directory structure (since these are typically
+    at the root of a project folder).
 
     Args:
-        project_path: Path to an Xcode project/workspace directory, which must
-        end in '.xcodeproj' or '.xcworkspace' and must exist.
+        directory_path: Path to directory to scan. Can also be a .xcodeproj or
+                       .xcworkspace path (will scan parent directory in that case).
+        max_depth: Maximum recursion depth (default 4, prevents excessive output).
+                  Depth 1 = immediate subdirectories only, Depth 4 = up to 4 levels deep.
 
     Returns:
-        A string representation of the project hierarchy
+        A visual tree representation showing only directories/folders, with a note
+        about using get_directory_listing for file-level details.
+
+        Example:
+        /Users/you/Projects/MyApp/
+        ├── Sources/
+        │   ├── Models/
+        │   └── Views/
+        ├── Tests/
+        └── Resources/
     """
-    # Validate and normalize path
-    project_path = validate_and_normalize_project_path(project_path, "Getting hierarchy for")
-    
-    # Get the parent directory to scan
-    parent_dir = os.path.dirname(project_path)
-    project_name = os.path.basename(project_path)
-    
-    # Build the hierarchy
-    def build_hierarchy(path: str, prefix: str = "", is_last: bool = True, base_path: str = "") -> List[str]:
-        """Recursively build a visual hierarchy of files and folders"""
+    # Validate max_depth
+    if max_depth < 1:
+        raise InvalidParameterError("max_depth must be at least 1")
+
+    # Basic validation
+    if not directory_path or directory_path.strip() == "":
+        raise InvalidParameterError("directory_path cannot be empty")
+
+    directory_path = directory_path.strip()
+
+    # Security check
+    if not is_path_allowed(directory_path):
+        raise AccessDeniedError(f"Access to path '{directory_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
+
+    # Check if path exists
+    if not os.path.exists(directory_path):
+        raise InvalidParameterError(f"Path does not exist: {directory_path}")
+
+    # Normalize the path
+    directory_path = os.path.realpath(directory_path)
+
+    # Determine which directory to scan
+    # If path ends with .xcodeproj or .xcworkspace, scan the parent directory
+    if directory_path.endswith('.xcodeproj') or directory_path.endswith('.xcworkspace'):
+        show_notification("Xcode MCP", f"Getting directory tree for parent of {os.path.basename(directory_path)}")
+        scan_dir = os.path.dirname(directory_path)
+    else:
+        show_notification("Xcode MCP", f"Getting directory tree for {os.path.basename(directory_path)}")
+        scan_dir = directory_path
+
+    # Verify scan_dir is a directory
+    if not os.path.isdir(scan_dir):
+        raise InvalidParameterError(f"Path is not a directory: {scan_dir}")
+
+    # Build the hierarchy (directories only)
+    def build_hierarchy(path: str, prefix: str = "", is_last: bool = True, base_path: str = "", current_depth: int = 0) -> List[str]:
+        """Recursively build a visual hierarchy of directories only"""
         lines = []
 
         if not base_path:
             base_path = path
 
-        # Add current item
+        # Add current item (only if it's a directory and not the base)
         if path != base_path:
             connector = "└── " if is_last else "├── "
-            name = os.path.basename(path)
-            if os.path.isdir(path):
-                name += "/"
+            name = os.path.basename(path) + "/"
             lines.append(prefix + connector + name)
-            
+
             # Update prefix for children
             extension = "    " if is_last else "│   "
             prefix = prefix + extension
-        
+
+        # Check if we've reached max depth
+        if current_depth >= max_depth:
+            return lines
+
         # If it's a directory, recurse into it (with restrictions)
         if os.path.isdir(path):
             # Skip certain directories
-            if os.path.basename(path) in ['.build', 'build']:
+            if os.path.basename(path) in ['.build', 'build', 'DerivedData']:
                 return lines
-                
+
             # Don't recurse into .xcodeproj or .xcworkspace directories
             if path.endswith('.xcodeproj') or path.endswith('.xcworkspace'):
                 return lines
-            
+
             try:
                 items = sorted(os.listdir(path))
-                # Filter out hidden files except for important ones
-                items = [item for item in items if not item.startswith('.') or item in ['.gitignore', '.swift-version']]
-                
-                for i, item in enumerate(items):
+                # Filter to directories only, exclude hidden except for important ones
+                dir_items = []
+                for item in items:
                     item_path = os.path.join(path, item)
-                    is_last_item = (i == len(items) - 1)
-                    lines.extend(build_hierarchy(item_path, prefix, is_last_item, base_path))
+                    if os.path.isdir(item_path):
+                        # Include if not hidden, or if it's an important hidden dir
+                        if not item.startswith('.') or item in ['.git']:
+                            dir_items.append(item)
+
+                for i, item in enumerate(dir_items):
+                    item_path = os.path.join(path, item)
+                    is_last_item = (i == len(dir_items) - 1)
+                    lines.extend(build_hierarchy(item_path, prefix, is_last_item, base_path, current_depth + 1))
             except PermissionError:
                 pass
-                
+
         return lines
-    
-    # Build hierarchy starting from parent directory
-    hierarchy_lines = [parent_dir + "/"]
-    
+
+    # Build hierarchy starting from scan directory
+    hierarchy_lines = [scan_dir + "/"]
+
     try:
-        items = sorted(os.listdir(parent_dir))
-        # Filter out hidden files and build directories
-        items = [item for item in items if not item.startswith('.') or item in ['.gitignore', '.swift-version']]
-        
-        for i, item in enumerate(items):
-            item_path = os.path.join(parent_dir, item)
-            is_last_item = (i == len(items) - 1)
-            hierarchy_lines.extend(build_hierarchy(item_path, "", is_last_item, parent_dir))
-            
+        items = sorted(os.listdir(scan_dir))
+        # Filter to directories only
+        dir_items = []
+        for item in items:
+            item_path = os.path.join(scan_dir, item)
+            if os.path.isdir(item_path):
+                if not item.startswith('.') or item in ['.git']:
+                    dir_items.append(item)
+
+        for i, item in enumerate(dir_items):
+            item_path = os.path.join(scan_dir, item)
+            is_last_item = (i == len(dir_items) - 1)
+            hierarchy_lines.extend(build_hierarchy(item_path, "", is_last_item, scan_dir, 1))
+
     except Exception as e:
-        raise XCodeMCPError(f"Error building hierarchy for {project_path}: {str(e)}")
-    
-    return '\n'.join(hierarchy_lines)
+        raise XCodeMCPError(f"Error building directory tree for {directory_path}: {str(e)}")
+
+    tree_output = '\n'.join(hierarchy_lines)
+    return tree_output + "\n\nUse `get_directory_listing` to see files and details for a specific directory."
+
+
+@mcp.tool()
+def get_directory_listing(directory_path: str,
+                         regex_filter: Optional[str] = None,
+                         sort_by: str = "time",
+                         reverse: bool = True,
+                         max_results: int = 50) -> str:
+    """
+    List contents of a directory with file metadata.
+
+    Args:
+        directory_path: Path to directory to list
+        regex_filter: Optional regex to filter filenames (applied to basename only)
+        sort_by: Sort by "time" (modification time) or "name" (alphabetical). Default: "time"
+        reverse: Reverse sort order. Default: True (most recent first / Z-A)
+        max_results: Maximum entries to return (default 50, hard limit 100)
+
+    Returns:
+        Formatted listing with: name, type (file/dir), size, modified time.
+        Default behavior: 50 most recently modified files/folders.
+        Format: "main.swift  [file]  2.5 KB  2025-10-01 14:30"
+    """
+    # Validate sort_by
+    if sort_by not in ["time", "name"]:
+        raise InvalidParameterError("sort_by must be 'time' or 'name'")
+
+    # Hard limit max_results to 100
+    if max_results < 1:
+        raise InvalidParameterError("max_results must be at least 1")
+    if max_results > 100:
+        max_results = 100
+
+    # Basic validation
+    if not directory_path or directory_path.strip() == "":
+        raise InvalidParameterError("directory_path cannot be empty")
+
+    directory_path = directory_path.strip()
+
+    # Security check
+    if not is_path_allowed(directory_path):
+        raise AccessDeniedError(f"Access to path '{directory_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
+
+    # Normalize and check path
+    directory_path = os.path.realpath(directory_path)
+
+    if not os.path.exists(directory_path):
+        raise InvalidParameterError(f"Path does not exist: {directory_path}")
+
+    if not os.path.isdir(directory_path):
+        raise InvalidParameterError(f"Path is not a directory: {directory_path}")
+
+    show_notification("Xcode MCP", f"Listing contents of {os.path.basename(directory_path)}")
+
+    # Helper function to format file size
+    def format_size(size_bytes: int) -> str:
+        """Format size in human-readable format"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} TB"
+
+    try:
+        # Get all items in directory
+        items = os.listdir(directory_path)
+
+        # Build list of item info
+        item_list = []
+        for item in items:
+            item_path = os.path.join(directory_path, item)
+
+            # Apply regex filter if provided
+            if regex_filter and regex_filter.strip():
+                try:
+                    if not re.search(regex_filter, item):
+                        continue
+                except re.error as e:
+                    raise InvalidParameterError(f"Invalid regex pattern: {e}")
+
+            try:
+                stat_info = os.stat(item_path)
+                is_dir = os.path.isdir(item_path)
+
+                item_list.append({
+                    'name': item,
+                    'is_dir': is_dir,
+                    'size': 0 if is_dir else stat_info.st_size,
+                    'mtime': stat_info.st_mtime,
+                    'path': item_path
+                })
+            except (OSError, PermissionError):
+                # Skip items we can't stat
+                continue
+
+        # Sort items
+        if sort_by == "time":
+            item_list.sort(key=lambda x: x['mtime'], reverse=reverse)
+        else:  # sort_by == "name"
+            item_list.sort(key=lambda x: x['name'].lower(), reverse=reverse)
+
+        # Limit results
+        item_list = item_list[:max_results]
+
+        if not item_list:
+            return f"No items found in {directory_path}" + (f" matching filter '{regex_filter}'" if regex_filter else "")
+
+        # Format output
+        output_lines = []
+        output_lines.append(f"Contents of {directory_path}/")
+        output_lines.append(f"(Showing {len(item_list)} item(s), sorted by {sort_by}, {'descending' if reverse else 'ascending'})")
+        output_lines.append("")
+
+        for item in item_list:
+            # Format modification time
+            import datetime
+            mtime_str = datetime.datetime.fromtimestamp(item['mtime']).strftime('%Y-%m-%d %H:%M')
+
+            # Format item type and size
+            if item['is_dir']:
+                type_str = "[dir]"
+                size_str = "-"
+            else:
+                type_str = "[file]"
+                size_str = format_size(item['size'])
+
+            # Format output line
+            output_lines.append(f"{item['name']:40s}  {type_str:8s}  {size_str:>10s}  {mtime_str}")
+
+        return "\n".join(output_lines)
+
+    except Exception as e:
+        if isinstance(e, (XCodeMCPError, InvalidParameterError, AccessDeniedError)):
+            raise
+        raise XCodeMCPError(f"Error listing directory: {e}")
+
 
 @mcp.tool()
 def get_project_schemes(project_path: str) -> str:
@@ -664,8 +848,10 @@ def get_project_schemes(project_path: str) -> str:
     '''
     
     success, output = run_applescript(script)
-    
+
     if success:
+        if output:
+            output += "\n\nUse `build_project` with a scheme name, or omit the scheme parameter to build the active scheme."
         return output
     else:
         raise XCodeMCPError(f"Failed to get schemes for {project_path}: {output}")
@@ -783,10 +969,10 @@ end tell
     '''
     
     success, output = run_applescript(script)
-    
+
     if success:
         if output == "Build succeeded.":
-            return "Build succeeded with 0 errors."
+            return "Build succeeded with 0 errors.\n\nUse `run_project` to launch the app, or `run_project_tests` to run tests."
         else:
             # Use the shared helper to extract and format errors/warnings
             return extract_build_errors_and_warnings(output, include_warnings)
@@ -2074,7 +2260,9 @@ def list_project_tests(project_path: str) -> str:
                         continue
 
             if tests:
-                return "\n".join(sorted(tests))
+                result = "\n".join(sorted(tests))
+                result += "\n\nUse `run_project_tests` to run all tests or pass specific test identifiers to run selected tests."
+                return result
 
         return f"Could not find test files for project: {os.path.basename(project_path)}\n" + \
                "Make sure your test files follow naming convention (*Test.swift or *Tests.swift)"

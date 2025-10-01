@@ -1,55 +1,57 @@
 # Xcode MCP Server
 
-An MCP (Model Context Protocol) server for controlling and interacting with Xcode from AI assistants like Claude.
+An MCP (Model Context Protocol) server that enables AI assistants to control and interact with Xcode for Apple platform development.
 
-## Features
+## What It Does
 
-- Get project hierarchy
-- Build and run projects
-- Retrieve build errors and warnings
-- Get runtime output from console logs
-- Clean projects
-- List booted iOS simulators
-- Take screenshots of Xcode windows
-- Take screenshots of running simulators
+This server allows AI assistants (like Claude, Cursor, or other MCP clients) to:
+
+- **Discover and navigate** your Xcode projects and source files
+- **Build and run** iOS, macOS, tvOS, and watchOS applications
+- **Execute and monitor tests** with detailed results
+- **Debug build failures** by retrieving errors and warnings
+- **Capture console output** from running applications
+- **Take screenshots** of Xcode windows and iOS simulators
+- **Manage simulators** and view their status
+
+The AI can perform complete development workflows - from finding a project, to building it, running tests, debugging failures, and capturing results.
+
+## Requirements
+
+- **macOS** - This server only works on macOS
+- **Xcode** - Xcode must be installed
+- **Python 3.8+** - For running the server
 
 ## Security
 
-The server implements path-based security to prevent unauthorized access to files outside of allowed directories:
+The server implements path-based security to control which directories are accessible:
 
-- You must specify allowed folders using the environment variable:
-  - `XCODEMCP_ALLOWED_FOLDERS=/path1:/path2:/path3`
-- Otherwise, all files and subfolders from your home directory ($HOME) will be allowed.
+- **With restrictions:** Set `XCODEMCP_ALLOWED_FOLDERS=/path1:/path2:/path3` to limit access to specific directories
+- **Default:** If not specified, allows access to your home directory (`$HOME`)
 
 Security requirements:
-- All paths must be absolute (starting with /)
-- No path components with `..` are allowed
+- All paths must be absolute (starting with `/`)
+- No `..` path components allowed
 - All paths must exist and be directories
-
-Example:
-```bash
-# Set the environment variable
-export XCODEMCP_ALLOWED_FOLDERS=/Users/username/Projects:/Users/username/checkouts
-python3 xcode_mcp.py
-
-# Or inline with the MCP command
-XCODEMCP_ALLOWED_FOLDERS=/Users/username/Projects mcp dev xcode_mcp.py
-```
-
-If no allowed folders are specified, access will be restricted and tools will return error messages.
 
 ## Setup
 
-1. Configure Claude for Desktop:
+### 1. Claude Code (Recommended)
 
-First, using homebrew, install 'uv'. You might already have this on your system, but installing it via Homebrew usually ensures that `uvx` (part of `uv`)  is in the $PATH that Claude Desktop vends to on-device local MCP servers:
+```bash
+claude mcp add --scope user --transport stdio `which uvx` xcode-mcp-server
+```
 
-```brew install uv```
+That's it! Claude Code handles the rest automatically.
 
-Open/create your Claude for Desktop configuration file
-- Open Claude Desktop --> Settings --> Developer --> Edit Config (to find the file in finder)
-- It should be at `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Add the following:
+### 2. Claude Desktop
+
+Install `uv` via Homebrew (if not already installed):
+```bash
+brew install uv
+```
+
+Edit your Claude Desktop config file (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json
 {
@@ -82,162 +84,100 @@ If you'd like to allow only certain projects or folders to be accessible by xcod
 }
 ```
 
-If you omit the `env` section, access will default to your $HOME directory.
-
-2. Add xcode-mcp-server to **Claude Code** (Anthropic's CLI-based agent)
-
-- Install claude code 
-- Add xcode-mcp-server:
-
-  claude mcp add --scope user --transport stdio \`which uvx\` xcode-mcp-server
-  
-3. Add xcode-mcp-server to **Cursor AI**
-
-- Install Cursor, of course
-- In Cursor, navigate to: Cursor --> Settings --> Cursor Settings
-- Then choose 'Tools & Integrations'
-- Tap the + button for 'New MCP Server'
-
-The steps above will get you editing the file ~/.cursor/mcp.json, which you could also edit directly, if you prefer.  Add a section for 'xcode-mcp-server' in the 'mcpServers' section - like this:
+**Optional:** Restrict access to specific folders by adding an `env` section:
 
 ```json
 {
     "mcpServers": {
         "xcode-mcp-server": {
             "command": "uvx",
-            "args": [
-                "xcode-mcp-server"
-            ]
-        }
-    }
-}
-```
-
-If you'd like to allow only certain projects or folders to be accessible by xcode-mcp-server, add the `env` option, with a colon-separated list of absolute folder paths, like this:
-
-```json
-{
-    "mcpServers": {
-        "xcode-mcp-server": {
-            "command": "uvx",
-            "args": [
-                "xcode-mcp-server"
-            ],
+            "args": ["xcode-mcp-server"],
             "env": {
-                "XCODEMCP_ALLOWED_FOLDERS": "/Users/andrew/my_project:/Users/andrew/Documents/source"
+                "XCODEMCP_ALLOWED_FOLDERS": "/Users/you/Projects:/Users/you/Work"
             }
         }
     }
 }
 ```
 
-Be sure to hit Command-S to save the file.
+### 3. Cursor AI
 
-If you omit the `env` section, access will default to your $HOME directory.
+In Cursor: Settings → Tools & Integrations → + New MCP Server
 
-### Test it out
-- Open cursor to your favorite xcode project (just open the root folder of the project or git repo), and tell Cursor something like:
+Or edit `~/.cursor/mcp.json` directly:
 
-    build this project using xcode-mcp-server
-    
-You'll get a permission prompt from Cursor and then one from macOS, and after that you should be off and running.
+```json
+{
+    "mcpServers": {
+        "xcode-mcp-server": {
+            "command": "uvx",
+            "args": ["xcode-mcp-server"]
+        }
+    }
+}
+```
+
+**Optional:** Add folder restrictions with an `env` section (same format as Claude Desktop above).
 
 ## Usage
 
-1. Open Xcode with a project
-2. Start Claude for Desktop
-   - If xcode-mcp-server failed to initialize properly, you'll see errors
-3. Look for the hammer icon to find available Xcode tools
-4. Use natural language to interact with Xcode, for example:
-   - "Build the project at /path/to/MyProject.xcodeproj"
-   - "Run the app in /path/to/MyProject"
-   - "What build errors are there in /path/to/MyProject.xcodeproj?"
-   - "Clean the project at /path/to/MyProject"
-   - "List all booted simulators"
-   - "Take a screenshot of the Xcode window for /path/to/MyProject"
-   - "Take a screenshot of the running simulator"
+Once configured, simply ask your AI assistant to help with Xcode tasks:
 
-### Parameter Format
+- "Find all Xcode projects in my home directory"
+- "Build the project at /path/to/MyProject.xcodeproj"
+- "Run tests for this project and show me any failures"
+- "What are the build errors in this project?"
+- "Show me the directory structure of this project"
+- "Take a screenshot of the Xcode window"
 
-All tools require a `project_path` parameter pointing to an Xcode project/workspace directory:
+Most tools work with paths to `.xcodeproj` or `.xcworkspace` files, or with regular directory paths for browsing and navigation.
 
-```
-"/path/to/your/project.xcodeproj"
-```
-
-or
-
-```
-"/path/to/your/project"
-```
-
-## Configuration Options
+## Advanced Configuration
 
 ### Command Line Arguments
 
-The server supports several command line arguments for customization:
+When running the server directly (for development or custom setups), these options are available:
 
-#### Build Warning Control
-- `--no-build-warnings`: Exclude warnings from build output (only show errors)
-- `--always-include-build-warnings`: Always include warnings in build output (default behavior)
+**Build output control:**
+- `--no-build-warnings` - Show only errors, exclude warnings
+- `--always-include-build-warnings` - Always show warnings (default)
 
-Example usage:
+**Notifications:**
+- `--show-notifications` - Enable macOS notifications for operations
+- `--hide-notifications` - Disable notifications (default)
+
+**Access control:**
+- `--allowed /path` - Add allowed folder (can be repeated)
+
+Example:
 ```bash
-# Exclude warnings from build output
-xcode-mcp-server --no-build-warnings
-
-# Explicitly enable warnings (default behavior)
-xcode-mcp-server --always-include-build-warnings
+xcode-mcp-server --no-build-warnings --show-notifications --allowed ~/Projects
 ```
 
-#### Notification Control
-- `--show-notifications`: Enable macOS notifications for tool invocations
-- `--hide-notifications`: Disable macOS notifications
-
-#### Allowed Folders
-- `--allowed /path/to/folder`: Add an allowed folder path (can be used multiple times)
-
-Example combining multiple options:
-```bash
-xcode-mcp-server --no-build-warnings --show-notifications --allowed /Users/me/Projects
-```
-
-### Build Output Behavior
-
-By default, when a build fails:
-1. The server collects both error and warning lines from the build output
-2. Errors are prioritized and listed first, followed by warnings
-3. The output is limited to the first 25 lines total (errors + warnings)
-4. You can exclude warnings using `--no-build-warnings` to focus only on errors
-
-The `build_project` tool also accepts an optional `include_warnings` parameter that overrides the global setting for individual build operations.
+**Note:** When using MCP clients (Claude, Cursor), configure these via the `env` section in your client's config file instead.
 
 ## Development
 
-The server is built with the MCP Python SDK and uses AppleScript to communicate with Xcode.
+The server is built with FastMCP and uses AppleScript to communicate with Xcode.
 
-To test the server locally without Claude, use:
+### Local Testing
+
+Test with MCP Inspector:
 
 ```bash
-# Set the environment variable first
-export XCODEMCP_ALLOWED_FOLDERS=/Users/username/Projects
-mcp dev xcode_mcp.py
-
-# Or inline with the command
-XCODEMCP_ALLOWED_FOLDERS=/Users/username/Projects mcp dev xcode_mcp.py
+export XCODEMCP_ALLOWED_FOLDERS=~/Projects
+mcp dev xcode_mcp_server/__main__.py
 ```
 
-This will open the MCP Inspector interface where you can test the tools directly.
+This opens an inspector interface where you can test tools directly. Provide paths as quoted strings: `"/Users/you/Projects/MyApp.xcodeproj"`
 
-### Testing in MCP Inspector
+### Building and Publishing
 
-When testing in the MCP Inspector, provide input values as quoted strings:
-
-```
-"/Users/username/Projects/MyApp"
+```bash
+./deploy.sh  # Increments version, builds, and uploads to PyPI
 ```
 
 ## Limitations
 
-- Project hierarchy is a simple file listing implementation
-- AppleScript syntax may need adjustments for specific Xcode versions # xcode-mcp-server
+- AppleScript syntax may need adjustments for specific Xcode versions
+- Some operations require the project to be open in Xcode first

@@ -24,7 +24,14 @@
       "Bash(python3:*)",
       "Bash(find:*)",
       "Bash(wc:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(pip3 show:*)",
+      "Read(//Users/andrew/.local/lib/**)",
+      "Read(//Users/andrew/Library/Python/3.9/lib/python/site-packages/**)",
+      "Read(//Users/andrew/Library/**)",
+      "WebSearch",
+      "Bash(uv pip list:*)",
+      "Bash(tree:*)"
     ],
     "deny": []
   }
