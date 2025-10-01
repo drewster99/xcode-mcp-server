@@ -2041,6 +2041,98 @@ def extract_test_statistics(build_log: str) -> Dict[str, Any]:
 
     return stats
 
+def extract_test_failures_from_log(build_log: str) -> List[Dict[str, str]]:
+    """
+    Extract test failure details from the build log when the test failures
+    collection from AppleScript is empty.
+    """
+    import re
+    failures = []
+
+    if not build_log:
+        return failures
+
+    lines = build_log.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Look for test failure patterns
+        # Pattern 1: "Test Case '-[TestClass testMethod]' failed"
+        if "Test Case" in line and "failed" in line:
+            match = re.search(r"Test Case '(-\[(\w+)\s+(\w+)\])' failed", line)
+            if match:
+                test_class = match.group(2)
+                test_method = match.group(3)
+
+                # Extract failure message from next lines
+                failure_msg = ""
+                file_path = ""
+                line_num = ""
+
+                # Look ahead for assertion failure details
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    # Pattern: "XCTAssertEqual failed: ("value1") is not equal to ("value2")"
+                    if "XCTAssert" in next_line or "failed:" in next_line:
+                        failure_msg = next_line.strip()
+
+                    # Pattern for file location: "/path/to/file.swift:123"
+                    file_match = re.search(r'(/.+\.swift):(\d+)', next_line)
+                    if file_match:
+                        file_path = file_match.group(1)
+                        line_num = file_match.group(2)
+
+                failures.append({
+                    "test_class": test_class,
+                    "test_method": test_method,
+                    "message": failure_msg or f"Test {test_method} failed",
+                    "file_path": file_path,
+                    "line_number": line_num
+                })
+
+        # Pattern 2: Testing failures in Xcode 15+ format
+        # "❌ /path/to/file.swift:123: XCTAssertEqual failed"
+        elif "❌" in line:
+            # Extract file path and line number
+            match = re.search(r'❌\s+(/.+\.swift):(\d+):\s*(.+)', line)
+            if match:
+                file_path = match.group(1)
+                line_num = match.group(2)
+                failure_msg = match.group(3)
+
+                # Try to extract test name from context
+                test_name = ""
+                # Look back for test method name
+                for j in range(max(0, i-5), i):
+                    if "Test Case" in lines[j]:
+                        name_match = re.search(r"Test Case '(-\[(\w+)\s+(\w+)\])'", lines[j])
+                        if name_match:
+                            test_name = name_match.group(3)
+                            break
+
+                failures.append({
+                    "test_class": "",
+                    "test_method": test_name or "Unknown",
+                    "message": failure_msg,
+                    "file_path": file_path,
+                    "line_number": line_num
+                })
+
+        i += 1
+
+    # If we still don't have failures but the test failed, add a generic failure
+    if not failures and ("failed" in build_log.lower() or "❌" in build_log):
+        failures.append({
+            "test_class": "Unknown",
+            "test_method": "Unknown",
+            "message": "Test failed (details could not be extracted from log)",
+            "file_path": "",
+            "line_number": ""
+        })
+
+    return failures
+
 def find_xcresult_bundle(project_path: str) -> Optional[str]:
     """
     Find the most recent .xcresult bundle for the project.
@@ -2213,42 +2305,9 @@ def run_project_tests(project_path: str,
         # Run all tests
         test_command = 'test workspaceDoc'
 
-    script = f'''
-set projectPath to "{escaped_path}"
-
-tell application "Xcode"
-    -- Wait for any modal dialogs to be dismissed
-    delay 0.5
-
-    -- Open and get the workspace document
-    open projectPath
-    delay 2
-
-    -- Get the workspace document
-    set workspaceDoc to first workspace document whose path is projectPath
-
-    -- Wait for workspace to load
-    set loadWaitTime to 0
-    repeat while loadWaitTime < 60
-        if loaded of workspaceDoc is true then
-            exit repeat
-        end if
-        delay 0.5
-        set loadWaitTime to loadWaitTime + 0.5
-    end repeat
-
-    if loaded of workspaceDoc is false then
-        error "Workspace failed to load within timeout"
-    end if
-
-    -- Set scheme if specified
-    {f'set active scheme of workspaceDoc to scheme "{escape_applescript_string(scheme)}" of workspaceDoc' if scheme else ''}
-
-    -- Start the test
-    set testResult to {test_command}
-
-    {'-- Wait for completion' if wait_for_completion else '-- Return immediately'}
-    {f'''set waitTime to 0
+    # Build the script differently based on wait_for_completion
+    if wait_for_completion:
+        wait_section = f'''set waitTime to 0
     repeat while waitTime < {max_wait_seconds}
         if completed of testResult is true then
             exit repeat
@@ -2298,14 +2357,16 @@ tell application "Xcode"
             end repeat
         else
             -- No test failures in collection, but status might still be failed
+            -- This happens when tests fail but the failures collection is empty
+            -- We'll parse the build log later to extract actual failure details
             if testStatus is "failed" or testStatus contains "fail" then
-                set failureMessages to "Test failed but no detailed failure information available\\n"
+                set failureMessages to "PARSE_FROM_LOG" & "\\n"
             end if
         end if
     on error errMsg
         -- Could not access test failures
         if testStatus is "failed" or testStatus contains "fail" then
-            set failureMessages to "ERROR: Could not retrieve test failure details: " & errMsg & "\\n"
+            set failureMessages to "PARSE_FROM_LOG" & "\\n"
         end if
     end try
 
@@ -2319,7 +2380,46 @@ tell application "Xcode"
            "Completed: " & testCompleted & "\\n" & ¬
            "FailureCount: " & (failureCount as string) & "\\n" & ¬
            "Failures:\\n" & failureMessages & "\\n" & ¬
-           "---LOG---\\n" & buildLog''' if wait_for_completion else 'return "Tests started successfully"'}
+           "---LOG---\\n" & buildLog'''
+    else:
+        wait_section = 'return "Tests started successfully"'
+
+    script = f'''
+set projectPath to "{escaped_path}"
+
+tell application "Xcode"
+    -- Wait for any modal dialogs to be dismissed
+    delay 0.5
+
+    -- Open and get the workspace document
+    open projectPath
+    delay 2
+
+    -- Get the workspace document
+    set workspaceDoc to first workspace document whose path is projectPath
+
+    -- Wait for workspace to load
+    set loadWaitTime to 0
+    repeat while loadWaitTime < 60
+        if loaded of workspaceDoc is true then
+            exit repeat
+        end if
+        delay 0.5
+        set loadWaitTime to loadWaitTime + 0.5
+    end repeat
+
+    if loaded of workspaceDoc is false then
+        error "Workspace failed to load within timeout"
+    end if
+
+    -- Set scheme if specified
+    {f'set active scheme of workspaceDoc to scheme "{escape_applescript_string(scheme)}" of workspaceDoc' if scheme else ''}
+
+    -- Start the test
+    set testResult to {test_command}
+
+    {'-- Wait for completion' if wait_for_completion else '-- Return immediately'}
+    {wait_section}
 end tell
     '''
 
@@ -2370,7 +2470,17 @@ end tell
     stats = extract_test_statistics(build_log_str)
 
     # Parse failures
-    failures = parse_test_failures('\n'.join(failures_text))
+    failures = []
+    failures_str = '\n'.join(failures_text)
+
+    # Check if we need to parse failures from the build log
+    if "PARSE_FROM_LOG" in failures_str and build_log_str:
+        # Extract test failures from build log
+        failures = extract_test_failures_from_log(build_log_str)
+        failure_count = len(failures)
+    else:
+        # Parse from AppleScript output
+        failures = parse_test_failures(failures_str)
 
     # Use failure count if we have it
     if failure_count > 0 and stats["failed"] == 0:
