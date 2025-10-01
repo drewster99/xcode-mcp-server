@@ -1957,355 +1957,52 @@ def format_test_identifier(bundle: str, class_name: str = None, method: str = No
     else:
         return bundle
 
-def parse_test_failures(failures_text: str) -> List[Dict[str, str]]:
-    """
-    Parse test failure information from AppleScript result.
-    Returns list of failure dictionaries with message, file_path, etc.
-    Note: This is rarely used now since AppleScript test failures collection
-    is often empty; we primarily rely on extract_test_failures_from_log() instead.
-    """
-    failures = []
-    if not failures_text or failures_text == "missing value" or failures_text.strip() == "":
-        return failures
 
-    # Parse the structured format from AppleScript
-    current_failure = {}
-    for line in failures_text.strip().split('\n'):
-        line = line.strip()
-        if line.startswith("FAILURE: "):
-            if current_failure:
-                failures.append(current_failure)
-            current_failure = {"message": line[9:], "file_path": "", "line_number": "", "test_class": "", "test_method": ""}
-        elif line.startswith("FILE: "):
-            if current_failure:
-                current_failure["file_path"] = line[6:]
-        elif line.startswith("LINE: "):
-            if current_failure:
-                current_failure["line_number"] = line[6:]
-        elif line.startswith("ERROR: "):
-            # Handle error message about failure retrieval
-            if not failures:
-                failures.append({"message": line[7:], "file_path": "", "line_number": "", "test_class": "", "test_method": ""})
-        elif line == "---":
-            if current_failure:
-                failures.append(current_failure)
-                current_failure = {}
-        elif line and not line.startswith("---"):
-            # Handle single line failure messages
-            if not current_failure and line not in ["", "Failures:"]:
-                failures.append({"message": line, "file_path": "", "line_number": "", "test_class": "", "test_method": ""})
 
-    # Add last failure if exists
-    if current_failure and current_failure.get("message"):
-        failures.append(current_failure)
 
-    return failures
-
-def extract_test_statistics(build_log: str) -> Dict[str, Any]:
-    """
-    Extract test counts and timing from build log.
-    """
-    stats = {
-        "total": 0,
-        "passed": 0,
-        "failed": 0,
-        "skipped": 0,
-        "duration": 0.0
-    }
-
-    if not build_log:
-        return stats
-
-    # Look for test summary lines in build log
-    # Example: "Test Suite 'All tests' passed at 2024-01-01 12:00:00.000."
-    # Example: "Executed 42 tests, with 2 failures (0 unexpected) in 12.500 (12.501) seconds"
-
-    for line in build_log.split('\n'):
-        # Check for test execution summary
-        if "Executed" in line and "tests" in line:
-            import re
-            # Try to extract numbers
-            executed_match = re.search(r'Executed (\d+) test', line)
-            if executed_match:
-                stats["total"] = int(executed_match.group(1))
-
-            failures_match = re.search(r'(\d+) failure', line)
-            if failures_match:
-                stats["failed"] = int(failures_match.group(1))
-                stats["passed"] = stats["total"] - stats["failed"]
-            elif "0 failures" in line or "passed" in line.lower():
-                stats["passed"] = stats["total"]
-
-            # Extract duration
-            duration_match = re.search(r'in ([\d.]+)', line)
-            if duration_match:
-                stats["duration"] = float(duration_match.group(1))
-
-    return stats
-
-def extract_test_failures_from_log(build_log: str) -> List[Dict[str, str]]:
-    """
-    Extract test failure details from the build log when the test failures
-    collection from AppleScript is empty.
-    """
-    import re
-    failures = []
-    seen_failures = set()  # Track unique failures to avoid duplicates
-
-    if not build_log:
-        return failures
-
-    lines = build_log.split('\n')
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-
-        # Look for test failure patterns
-        # Pattern 1: "Test Case '-[TestClass testMethod]' failed (x.xx seconds)"
-        if "Test Case" in line and "failed" in line:
-            match = re.search(r"Test Case '?-?\[(\w+)\s+(\w+)\]'?\s+failed", line)
-            if match:
-                test_class = match.group(1)
-                test_method = match.group(2)
-
-                # Extract failure message and location from surrounding lines
-                failure_msg = ""
-                file_path = ""
-                line_num = ""
-
-                # Look at next few lines for assertion details
-                for j in range(i + 1, min(i + 5, len(lines))):
-                    next_line = lines[j]
-
-                    # Look for XCTAssert failures or error messages
-                    if "XCTAssert" in next_line or "failed" in next_line.lower():
-                        if not failure_msg:
-                            failure_msg = next_line.strip()
-
-                    # Look for file:line patterns
-                    file_match = re.search(r'([\w/\-\.]+\.swift):(\d+)', next_line)
-                    if file_match and not file_path:
-                        file_path = file_match.group(1)
-                        line_num = file_match.group(2)
-
-                # Create a unique key to avoid duplicates
-                failure_key = f"{test_class}.{test_method}:{file_path}:{line_num}"
-                if failure_key not in seen_failures:
-                    seen_failures.add(failure_key)
-                    failures.append({
-                        "test_class": test_class,
-                        "test_method": test_method,
-                        "message": failure_msg or f"Test {test_class}.{test_method} failed",
-                        "file_path": file_path,
-                        "line_number": line_num
-                    })
-
-        # Pattern 2: XCTest output format with file location
-        # "	Executed 1 test, with 1 failure (0 unexpected) in 0.123 (0.456) seconds"
-        # "/path/to/TestFile.swift:42: error: -[TestClass testMethod] : XCTAssertEqual failed..."
-        elif ": error: -[" in line:
-            match = re.search(r'([\w/\-\.]+\.swift):(\d+):\s*error:\s*-\[(\w+)\s+(\w+)\]\s*:\s*(.+)', line)
-            if match:
-                file_path = match.group(1)
-                line_num = match.group(2)
-                test_class = match.group(3)
-                test_method = match.group(4)
-                failure_msg = match.group(5)
-
-                # Create a unique key to avoid duplicates
-                failure_key = f"{test_class}.{test_method}:{file_path}:{line_num}"
-                if failure_key not in seen_failures:
-                    seen_failures.add(failure_key)
-                    failures.append({
-                        "test_class": test_class,
-                        "test_method": test_method,
-                        "message": failure_msg,
-                        "file_path": file_path,
-                        "line_number": line_num
-                    })
-
-        # Pattern 3: Xcode 15+ format with ❌ emoji
-        # "❌ /path/to/file.swift:123: XCTAssertEqual failed: ("actual") is not equal to ("expected")"
-        elif "❌" in line:
-            # Try to extract file path, line, and message
-            match = re.search(r'❌\s+([\w/\-\.]+\.swift):(\d+):\s*(.+)', line)
-            if not match:
-                # Try alternate format without file path
-                match = re.search(r'❌\s+(.+)', line)
-                if match:
-                    failure_msg = match.group(1)
-                    file_path = ""
-                    line_num = ""
-                else:
-                    i += 1
-                    continue
-            else:
-                file_path = match.group(1)
-                line_num = match.group(2)
-                failure_msg = match.group(3)
-
-            # Try to extract test name from previous lines
-            test_class = ""
-            test_method = ""
-            for j in range(max(0, i-5), i):
-                if "Test Case" in lines[j] or "-[" in lines[j]:
-                    name_match = re.search(r'-\[(\w+)\s+(\w+)\]', lines[j])
-                    if name_match:
-                        test_class = name_match.group(1)
-                        test_method = name_match.group(2)
-                        break
-
-            # Create a unique key to avoid duplicates
-            failure_key = f"{test_class or 'Unknown'}.{test_method or 'Unknown'}:{file_path}:{line_num}"
-            if failure_key not in seen_failures:
-                seen_failures.add(failure_key)
-                failures.append({
-                    "test_class": test_class or "Unknown",
-                    "test_method": test_method or "Unknown",
-                    "message": failure_msg,
-                    "file_path": file_path,
-                    "line_number": line_num
-                })
-
-        # Pattern 4: Test Suite failures
-        # "Test Suite 'TestClassName' failed at 2024-01-01 12:00:00.000"
-        elif "Test Suite" in line and "failed" in line:
-            match = re.search(r"Test Suite '(\w+)' failed", line)
-            if match:
-                test_class = match.group(1)
-                # Look for details in next lines
-                failure_msg = f"Test suite {test_class} failed"
-                for j in range(i + 1, min(i + 3, len(lines))):
-                    if "Executed" in lines[j] and "failure" in lines[j]:
-                        failure_msg = lines[j].strip()
-                        break
-
-                # For suite failures, we only track by test class name
-                failure_key = f"{test_class}.Suite"
-                if failure_key not in seen_failures:
-                    seen_failures.add(failure_key)
-                    failures.append({
-                        "test_class": test_class,
-                        "test_method": "Suite",
-                        "message": failure_msg,
-                        "file_path": "",
-                        "line_number": ""
-                    })
-
-        # Pattern 5: Simple failure messages with test name context
-        # "XCTAssertTrue failed - Some description"
-        elif re.search(r'XCTAssert\w+\s+failed', line):
-            failure_msg = line.strip()
-
-            # Try to find test context from previous lines
-            test_class = ""
-            test_method = ""
-            file_path = ""
-            line_num = ""
-
-            # Look back for test case info
-            for j in range(max(0, i-10), i):
-                if "Test Case" in lines[j]:
-                    name_match = re.search(r'-\[(\w+)\s+(\w+)\]', lines[j])
-                    if name_match:
-                        test_class = name_match.group(1)
-                        test_method = name_match.group(2)
-                        break
-
-            # Look for file location
-            file_match = re.search(r'([\w/\-\.]+\.swift):(\d+)', line)
-            if file_match:
-                file_path = file_match.group(1)
-                line_num = file_match.group(2)
-
-            if test_class or test_method or failure_msg != line.strip():
-                # Create a unique key to avoid duplicates
-                failure_key = f"{test_class or 'Unknown'}.{test_method or 'Unknown'}:{file_path}:{line_num}:{failure_msg[:50]}"
-                if failure_key not in seen_failures:
-                    seen_failures.add(failure_key)
-                    failures.append({
-                        "test_class": test_class or "Unknown",
-                        "test_method": test_method or "Unknown",
-                        "message": failure_msg,
-                        "file_path": file_path,
-                        "line_number": line_num
-                    })
-
-        i += 1
-
-    # If we still don't have specific failures but know tests failed,
-    # try to extract any useful information
-    if not failures and ("failed" in build_log.lower() or "❌" in build_log):
-        # Look for summary lines
-        for line in lines:
-            if "Executed" in line and "failure" in line:
-                match = re.search(r'Executed (\d+) tests?, with (\d+) failures?', line)
-                if match:
-                    test_count = match.group(1)
-                    failure_count = match.group(2)
-                    failures.append({
-                        "test_class": "TestSuite",
-                        "test_method": "Multiple",
-                        "message": f"Executed {test_count} tests with {failure_count} failures (details not available in log)",
-                        "file_path": "",
-                        "line_number": ""
-                    })
-                    break
-
-        # If still nothing, add generic failure
-        if not failures:
-            failures.append({
-                "test_class": "Unknown",
-                "test_method": "Unknown",
-                "message": "Tests failed (specific details could not be extracted from log)",
-                "file_path": "",
-                "line_number": ""
-            })
-
-    return failures
-
-def find_xcresult_bundle(project_path: str) -> Optional[str]:
+def find_xcresult_bundle(project_path: str, wait_seconds: int = 10) -> Optional[str]:
     """
     Find the most recent .xcresult bundle for the project.
+
+    Args:
+        project_path: Path to the Xcode project
+        wait_seconds: Maximum seconds to wait for xcresult to appear (not currently used,
+                      but kept for API compatibility)
+
+    Returns:
+        Path to the most recent xcresult bundle or None if not found
     """
-    # Get project name for searching
-    project_name = os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')
+    # Normalize and get project name
+    normalized_path = os.path.realpath(project_path)
+    project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
 
-    # Common locations for xcresult bundles
-    derived_data_paths = [
-        os.path.expanduser(f"~/Library/Developer/Xcode/DerivedData"),
-        "/tmp/XCBuildData"
-    ]
+    # Find the most recent xcresult file in DerivedData
+    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
 
-    newest_xcresult = None
-    newest_time = 0
+    # Look for directories matching the project name
+    # DerivedData directories typically have format: ProjectName-randomhash
+    try:
+        for derived_dir in os.listdir(derived_data_base):
+            # More precise matching: must start with project name followed by a dash
+            if derived_dir.startswith(project_name + "-"):
+                logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", "Test")
+                if os.path.exists(logs_dir):
+                    # Find the most recent .xcresult file
+                    xcresult_files = []
+                    for f in os.listdir(logs_dir):
+                        if f.endswith('.xcresult'):
+                            full_path = os.path.join(logs_dir, f)
+                            xcresult_files.append((os.path.getmtime(full_path), full_path))
 
-    for base_path in derived_data_paths:
-        if not os.path.exists(base_path):
-            continue
+                    if xcresult_files:
+                        xcresult_files.sort(reverse=True)
+                        most_recent = xcresult_files[0][1]
+                        print(f"DEBUG: Found xcresult bundle at {most_recent}", file=sys.stderr)
+                        return most_recent
+    except Exception as e:
+        print(f"Error searching for xcresult: {e}", file=sys.stderr)
 
-        # Search for xcresult files
-        try:
-            result = subprocess.run(
-                ['find', base_path, '-name', '*.xcresult', '-type', 'd'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-
-            if result.returncode == 0 and result.stdout:
-                for path in result.stdout.strip().split('\n'):
-                    if path and os.path.exists(path):
-                        # Check if this is related to our project
-                        if project_name.lower() in path.lower():
-                            stat = os.stat(path)
-                            if stat.st_mtime > newest_time:
-                                newest_time = stat.st_mtime
-                                newest_xcresult = path
-        except:
-            continue
-
-    return newest_xcresult
+    return None
 
 # =============================================================================
 # Test-related MCP tools
@@ -2389,7 +2086,6 @@ def list_project_tests(project_path: str) -> str:
 def run_project_tests(project_path: str,
                      tests_to_run: Optional[List[str]] = None,
                      scheme: Optional[str] = None,
-                     wait_for_completion: bool = True,
                      max_wait_seconds: int = 300) -> str:
     """
     Run tests for the specified Xcode project or workspace.
@@ -2400,12 +2096,11 @@ def run_project_tests(project_path: str,
                      If None or empty list, runs ALL tests.
                      Format: ["BundleName/ClassName/testMethod", ...]
         scheme: Optional scheme to test (uses active scheme if not specified)
-        wait_for_completion: If True, waits for tests to complete and returns results.
-                           If False, starts tests and returns immediately.
-        max_wait_seconds: Maximum seconds to wait for completion (default 300)
+        max_wait_seconds: Maximum seconds to wait for completion (default 300).
+                         Set to 0 to start tests and return immediately.
 
     Returns:
-        Test results if wait_for_completion is True, otherwise confirmation message
+        Test results if max_wait_seconds > 0, otherwise confirmation message
     """
     show_notification("Xcode MCP", f"Running tests for {os.path.basename(project_path)}")
 
@@ -2450,8 +2145,8 @@ def run_project_tests(project_path: str,
         # Run all tests
         test_command = 'test workspaceDoc'
 
-    # Build the script differently based on wait_for_completion
-    if wait_for_completion:
+    # Build the script differently based on max_wait_seconds
+    if max_wait_seconds > 0:
         wait_section = f'''set waitTime to 0
     repeat while waitTime < {max_wait_seconds}
         if completed of testResult is true then
@@ -2563,7 +2258,7 @@ tell application "Xcode"
     -- Start the test
     set testResult to {test_command}
 
-    {'-- Wait for completion' if wait_for_completion else '-- Return immediately'}
+    {'-- Wait for completion' if max_wait_seconds > 0 else '-- Return immediately'}
     {wait_section}
 end tell
     '''
@@ -2573,119 +2268,23 @@ end tell
     if not success:
         return f"Failed to run tests: {output}"
 
-    if not wait_for_completion:
+    if max_wait_seconds == 0:
         return "✅ Tests have been started. Use get_latest_test_results to check results later."
 
     # Debug: Log raw output to see what we're getting
-    print(f"DEBUG: Raw test output:\n{output}\n", file=sys.stderr)
+    if os.environ.get('XCODE_MCP_DEBUG'):
+        print(f"DEBUG: Raw test output:\n{output}\n", file=sys.stderr)
 
-    # Parse the results
+    # Parse the AppleScript output to get test status
     lines = output.split('\n')
     status = ""
     completed = False
-    failure_count = 0
-    failures_text = []
-    build_log = []
-    in_log = False
-    in_failures = False
 
     for line in lines:
         if line.startswith("Status: "):
             status = line.replace("Status: ", "").strip()
         elif line.startswith("Completed: "):
             completed = line.replace("Completed: ", "").strip().lower() == "true"
-        elif line.startswith("FailureCount: "):
-            try:
-                failure_count = int(line.replace("FailureCount: ", "").strip())
-            except:
-                failure_count = 0
-        elif line.startswith("Failures:"):
-            in_failures = True
-            in_log = False
-        elif line.startswith("---LOG---"):
-            in_log = True
-            in_failures = False
-        elif in_failures and not line.startswith("---LOG"):
-            failures_text.append(line)
-        elif in_log:
-            build_log.append(line)
-
-    # Parse statistics from build log
-    build_log_str = '\n'.join(build_log)
-    stats = extract_test_statistics(build_log_str)
-
-    # Save build log for debugging if environment variable is set
-    if os.environ.get('XCODE_MCP_DEBUG_LOGS'):
-        import tempfile
-        import datetime
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_path = os.path.join(tempfile.gettempdir(), f"xcode_mcp_test_log_{timestamp}.txt")
-        try:
-            with open(log_path, 'w') as f:
-                f.write(f"Test run at {timestamp}\n")
-                f.write(f"Project: {project_path}\n")
-                f.write(f"Status: {status}\n")
-                f.write(f"Completed: {completed}\n")
-                f.write(f"Failure count: {failure_count}\n")
-                f.write("\n--- BUILD LOG ---\n")
-                f.write(build_log_str)
-                f.write("\n--- FAILURES TEXT ---\n")
-                f.write('\n'.join(failures_text))
-            print(f"DEBUG: Test log saved to {log_path}", file=sys.stderr)
-        except Exception as e:
-            print(f"DEBUG: Failed to save test log: {e}", file=sys.stderr)
-
-    # Parse failures
-    failures = []
-    failures_str = '\n'.join(failures_text)
-
-    # Check if we need to parse failures from the build log
-    if "PARSE_FROM_LOG" in failures_str and build_log_str:
-        # Debug: Log that we're parsing from log
-        print(f"DEBUG: Parsing test failures from build log (AppleScript collection was empty)", file=sys.stderr)
-        print(f"DEBUG: Build log length: {len(build_log_str)} chars", file=sys.stderr)
-
-        # Extract test failures from build log
-        failures = extract_test_failures_from_log(build_log_str)
-        failure_count = len(failures)
-
-        print(f"DEBUG: Found {len(failures)} failures from build log parsing", file=sys.stderr)
-        for idx, failure in enumerate(failures):
-            print(f"DEBUG: Failure {idx + 1}: {failure.get('test_class', 'Unknown')}.{failure.get('test_method', 'Unknown')} - {failure.get('message', 'No message')}", file=sys.stderr)
-    else:
-        # Parse from AppleScript output
-        failures = parse_test_failures(failures_str)
-
-    # Use failure count if we have it
-    if failure_count > 0 and stats["failed"] == 0:
-        stats["failed"] = failure_count
-
-    # If we didn't get stats from build log, try to get from xcresult
-    if stats["total"] == 0 and completed:
-        # Wait a moment for xcresult to be written
-        time.sleep(2)
-        xcresult_path = find_xcresult_bundle(project_path)
-        if xcresult_path:
-            try:
-                # Try to get test count from xcresult
-                result = subprocess.run(
-                    ['xcrun', 'xcresulttool', 'get', '--path', xcresult_path, '--format', 'json'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    import json
-                    data = json.loads(result.stdout)
-                    if 'metrics' in data:
-                        metrics = data['metrics']
-                        if 'testsCount' in metrics:
-                            stats["total"] = metrics.get('testsCount', {}).get('_value', 0)
-                        if 'testsFailedCount' in metrics:
-                            stats["failed"] = metrics.get('testsFailedCount', {}).get('_value', 0)
-                            stats["passed"] = stats["total"] - stats["failed"]
-            except:
-                pass
 
     # Format the output
     output_lines = []
@@ -2695,52 +2294,40 @@ end tell
         output_lines.append(f"Status: {status}")
         return '\n'.join(output_lines)
 
-    # Determine overall result
-    if status == "succeeded" or (stats["total"] > 0 and stats["failed"] == 0):
-        output_lines.append("✅ All tests passed")
-    elif status == "failed" or stats["failed"] > 0:
-        output_lines.append("❌ Tests failed")
+    # If tests completed, get detailed results from xcresult
+    # Wait a moment for xcresult to be written
+    time.sleep(2)
+    xcresult_path = find_xcresult_bundle(project_path)
+
+    if xcresult_path:
+        print(f"DEBUG: Found xcresult bundle at {xcresult_path}", file=sys.stderr)
+
+        # Get the raw JSON from xcresulttool and return it
+        try:
+            result = subprocess.run(
+                ['xcrun', 'xcresulttool', 'get', 'test-results', 'tests', '--path', xcresult_path],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                # Return the raw JSON - let the LLM parse it
+                return result.stdout
+            else:
+                print(f"DEBUG: Failed to get xcresult data: {result.stderr}", file=sys.stderr)
+        except Exception as e:
+            print(f"DEBUG: Exception getting xcresult data: {e}", file=sys.stderr)
+
+    # Fallback if we couldn't get xcresult data
+    print(f"DEBUG: No xcresult bundle found for {project_path}", file=sys.stderr)
+
+    if status == "succeeded":
+        return "✅ All tests passed"
+    elif status == "failed":
+        return "❌ Tests failed\n\nNo detailed test results available - xcresult bundle not found"
     else:
-        output_lines.append(f"Status: {status}")
-
-    output_lines.append("")
-    output_lines.append("Summary:")
-    if stats["total"] > 0:
-        output_lines.append(f"- Total: {stats['total']} tests")
-        output_lines.append(f"- Passed: {stats['passed']}")
-        output_lines.append(f"- Failed: {stats['failed']}")
-        if stats["skipped"] > 0:
-            output_lines.append(f"- Skipped: {stats['skipped']}")
-        if stats["duration"] > 0:
-            output_lines.append(f"- Duration: {stats['duration']:.1f} seconds")
-    else:
-        output_lines.append("- No detailed test statistics available from Xcode")
-        output_lines.append(f"- Test run status: {status}")
-        if status == "succeeded":
-            output_lines.append("- All tests in scheme passed successfully")
-
-    if failures:
-        output_lines.append("")
-        output_lines.append(f"Failed Tests ({len(failures)}):")
-        for i, failure in enumerate(failures, 1):
-            # Format test identifier if available
-            test_id = ""
-            if failure.get('test_class') and failure['test_class'] != "Unknown":
-                test_id = f"[{failure['test_class']}"
-                if failure.get('test_method') and failure['test_method'] != "Unknown":
-                    test_id += f".{failure['test_method']}"
-                test_id += "] "
-
-            output_lines.append(f"\n{i}. {test_id}{failure.get('message', 'Test failed')}")
-
-            # Add location if available
-            if failure.get('file_path') and failure['file_path'] not in ["", "missing value"]:
-                location = failure['file_path']
-                if failure.get('line_number') and failure['line_number'] not in ["", "missing value"]:
-                    location += f":{failure['line_number']}"
-                output_lines.append(f"   Location: {location}")
-
-    return '\n'.join(output_lines)
+        return f"Test run status: {status}"
 
 @mcp.tool()
 def get_latest_test_results(project_path: str) -> str:
