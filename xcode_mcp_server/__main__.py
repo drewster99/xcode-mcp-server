@@ -1223,7 +1223,7 @@ def list_booted_simulators() -> str:
         raise XCodeMCPError(f"Error listing simulators: {e}")
 
 @mcp.tool()
-def take_screenshot_xcode(project_path: str) -> str:
+def take_xcode_screenshot(project_path: str) -> str:
     """
     Take a screenshot of the Xcode window for the specified project.
 
