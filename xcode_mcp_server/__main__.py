@@ -1941,6 +1941,557 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 
     return apps_with_windows
 
+# =============================================================================
+# Test-related helper functions
+# =============================================================================
+
+def format_test_identifier(bundle: str, class_name: str = None, method: str = None) -> str:
+    """
+    Format test identifier in standard format.
+    Returns: "Bundle/Class/method" or "Bundle/Class" or "Bundle"
+    """
+    if method and class_name:
+        return f"{bundle}/{class_name}/{method}"
+    elif class_name:
+        return f"{bundle}/{class_name}"
+    else:
+        return bundle
+
+def parse_test_failures(failures_text: str) -> List[Dict[str, str]]:
+    """
+    Parse test failure information from AppleScript result.
+    Returns list of failure dictionaries with message, file_path, etc.
+    """
+    failures = []
+    if not failures_text or failures_text == "missing value":
+        return failures
+
+    # Parse each failure line
+    for line in failures_text.strip().split('\n'):
+        if line.strip():
+            # Try to parse format: "TestClass.testMethod: message at file.swift:123"
+            failure = {"message": line.strip(), "file_path": "", "line": ""}
+
+            # Extract file location if present
+            if " at " in line:
+                parts = line.split(" at ", 1)
+                failure["message"] = parts[0].strip()
+                location = parts[1].strip()
+                if ":" in location:
+                    file_parts = location.rsplit(":", 1)
+                    failure["file_path"] = file_parts[0]
+                    failure["line"] = file_parts[1]
+                else:
+                    failure["file_path"] = location
+
+            failures.append(failure)
+
+    return failures
+
+def extract_test_statistics(build_log: str) -> Dict[str, Any]:
+    """
+    Extract test counts and timing from build log.
+    """
+    stats = {
+        "total": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "duration": 0.0
+    }
+
+    if not build_log:
+        return stats
+
+    # Look for test summary lines in build log
+    # Example: "Test Suite 'All tests' passed at 2024-01-01 12:00:00.000."
+    # Example: "Executed 42 tests, with 2 failures (0 unexpected) in 12.500 (12.501) seconds"
+
+    for line in build_log.split('\n'):
+        # Check for test execution summary
+        if "Executed" in line and "tests" in line:
+            import re
+            # Try to extract numbers
+            executed_match = re.search(r'Executed (\d+) test', line)
+            if executed_match:
+                stats["total"] = int(executed_match.group(1))
+
+            failures_match = re.search(r'(\d+) failure', line)
+            if failures_match:
+                stats["failed"] = int(failures_match.group(1))
+                stats["passed"] = stats["total"] - stats["failed"]
+            elif "0 failures" in line or "passed" in line.lower():
+                stats["passed"] = stats["total"]
+
+            # Extract duration
+            duration_match = re.search(r'in ([\d.]+)', line)
+            if duration_match:
+                stats["duration"] = float(duration_match.group(1))
+
+    return stats
+
+def find_xcresult_bundle(project_path: str) -> Optional[str]:
+    """
+    Find the most recent .xcresult bundle for the project.
+    """
+    # Get project name for searching
+    project_name = os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')
+
+    # Common locations for xcresult bundles
+    derived_data_paths = [
+        os.path.expanduser(f"~/Library/Developer/Xcode/DerivedData"),
+        "/tmp/XCBuildData"
+    ]
+
+    newest_xcresult = None
+    newest_time = 0
+
+    for base_path in derived_data_paths:
+        if not os.path.exists(base_path):
+            continue
+
+        # Search for xcresult files
+        try:
+            result = subprocess.run(
+                ['find', base_path, '-name', '*.xcresult', '-type', 'd'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode == 0 and result.stdout:
+                for path in result.stdout.strip().split('\n'):
+                    if path and os.path.exists(path):
+                        # Check if this is related to our project
+                        if project_name.lower() in path.lower():
+                            stat = os.stat(path)
+                            if stat.st_mtime > newest_time:
+                                newest_time = stat.st_mtime
+                                newest_xcresult = path
+        except:
+            continue
+
+    return newest_xcresult
+
+# =============================================================================
+# Test-related MCP tools
+# =============================================================================
+
+@mcp.tool()
+def list_project_tests(project_path: str,
+                       scheme: Optional[str] = None) -> str:
+    """
+    List all available tests in the specified Xcode project or workspace.
+
+    Args:
+        project_path: Path to Xcode project/workspace directory
+        scheme: Optional scheme to inspect (uses active scheme if not specified)
+
+    Returns:
+        A list of all test identifiers in the format:
+        BundleName/ClassName/testMethodName
+    """
+    show_notification("Xcode MCP", f"Listing tests for {os.path.basename(project_path)}")
+
+    # Validate and normalize the project path
+    project_path = validate_and_normalize_project_path(project_path, "list_project_tests")
+
+    # Escape for AppleScript
+    escaped_path = escape_applescript_string(project_path)
+
+    # AppleScript to list tests
+    # Note: There's no direct way to list all tests via AppleScript,
+    # so we'll try to get this information from a test build
+    script = f'''
+set projectPath to "{escaped_path}"
+
+tell application "Xcode"
+    -- Try to open the project
+    try
+        open projectPath
+        delay 1
+
+        -- Get the workspace document
+        set workspaceDoc to first workspace document whose path is projectPath
+
+        -- Get the active scheme if not specified
+        set schemeName to missing value
+        {f'set schemeName to "{escape_applescript_string(scheme)}"' if scheme else 'set schemeName to name of active scheme of workspaceDoc'}
+
+        -- We'll need to analyze the test action or build log
+        -- For now, return scheme information
+        return "Scheme: " & schemeName & "\\n" & ¬
+               "Note: To get detailed test list, run tests with list-only flag"
+    on error errMsg
+        return "Could not open project: " & errMsg
+    end try
+end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if not success:
+        # Try alternative: look for test files in the project
+        try:
+            # Find test files in the project directory
+            project_dir = os.path.dirname(project_path)
+            test_files = []
+
+            result = subprocess.run(
+                ['find', project_dir, '-name', '*Tests.swift', '-o', '-name', '*Test.swift'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0 and result.stdout:
+                test_files = result.stdout.strip().split('\n')
+
+                # Parse test files to extract test methods
+                tests = []
+                for file_path in test_files:
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            with open(file_path, 'r') as f:
+                                content = f.read()
+                                # Extract test class name from filename
+                                filename = os.path.basename(file_path)
+                                class_name = filename.replace('.swift', '')
+
+                                # Find test methods (simple regex)
+                                import re
+                                test_methods = re.findall(r'func\s+(test\w+)\s*\(', content)
+
+                                for method in test_methods:
+                                    # Guess bundle name from path
+                                    if 'UITests' in file_path:
+                                        bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '')}UITests"
+                                    else:
+                                        bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '')}Tests"
+
+                                    tests.append(f"{bundle}/{class_name}/{method}")
+                        except:
+                            continue
+
+                if tests:
+                    return "Available tests:\n" + "\n".join(sorted(tests))
+
+            return f"Could not retrieve test list for scheme: {scheme or 'active scheme'}\n" + \
+                   "To see available tests, run the tests once or check test files in the project."
+
+        except Exception as e:
+            return f"Error listing tests: {str(e)}"
+
+    return output
+
+@mcp.tool()
+def run_project_tests(project_path: str,
+                     tests_to_run: Optional[List[str]] = None,
+                     scheme: Optional[str] = None,
+                     wait_for_completion: bool = True,
+                     max_wait_seconds: int = 300) -> str:
+    """
+    Run tests for the specified Xcode project or workspace.
+
+    Args:
+        project_path: Path to Xcode project/workspace directory
+        tests_to_run: Optional list of test identifiers to run.
+                     If None or empty list, runs ALL tests.
+                     Format: ["BundleName/ClassName/testMethod", ...]
+        scheme: Optional scheme to test (uses active scheme if not specified)
+        wait_for_completion: If True, waits for tests to complete and returns results.
+                           If False, starts tests and returns immediately.
+        max_wait_seconds: Maximum seconds to wait for completion (default 300)
+
+    Returns:
+        Test results if wait_for_completion is True, otherwise confirmation message
+    """
+    show_notification("Xcode MCP", f"Running tests for {os.path.basename(project_path)}")
+
+    # Validate and normalize the project path
+    project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
+
+    # Validate wait time
+    if max_wait_seconds < 0:
+        raise InvalidParameterError("max_wait_seconds must be >= 0")
+
+    # Escape for AppleScript
+    escaped_path = escape_applescript_string(project_path)
+
+    # Build test arguments
+    test_args = []
+    if tests_to_run:  # If list is provided and not empty
+        for test_id in tests_to_run:
+            # Add -only-testing: prefix for each test
+            test_args.append(f'-only-testing:{test_id}')
+    # If tests_to_run is None or [], we run all tests (no arguments needed)
+
+    # Build the AppleScript
+    if test_args:
+        # Format arguments for AppleScript list
+        args_list = ', '.join([f'"{escape_applescript_string(arg)}"' for arg in test_args])
+        test_command = f'test workspaceDoc with command line arguments {{{args_list}}}'
+    else:
+        # Run all tests
+        test_command = 'test workspaceDoc'
+
+    script = f'''
+set projectPath to "{escaped_path}"
+
+tell application "Xcode"
+    -- Wait for any modal dialogs to be dismissed
+    delay 0.5
+
+    -- Open and get the workspace document
+    open projectPath
+    delay 2
+
+    -- Get the workspace document
+    set workspaceDoc to first workspace document whose path is projectPath
+
+    -- Wait for workspace to load
+    set loadWaitTime to 0
+    repeat while loadWaitTime < 60
+        if loaded of workspaceDoc is true then
+            exit repeat
+        end if
+        delay 0.5
+        set loadWaitTime to loadWaitTime + 0.5
+    end repeat
+
+    if loaded of workspaceDoc is false then
+        error "Workspace failed to load within timeout"
+    end if
+
+    -- Set scheme if specified
+    {f'set active scheme of workspaceDoc to scheme "{escape_applescript_string(scheme)}" of workspaceDoc' if scheme else ''}
+
+    -- Start the test
+    set testResult to {test_command}
+
+    {'-- Wait for completion' if wait_for_completion else '-- Return immediately'}
+    {f'''set waitTime to 0
+    repeat while waitTime < {max_wait_seconds}
+        if completed of testResult is true then
+            exit repeat
+        end if
+        delay 1
+        set waitTime to waitTime + 1
+    end repeat
+
+    -- Get results
+    set testStatus to status of testResult as string
+    set testCompleted to completed of testResult
+
+    -- Get failures if any
+    set failureMessages to ""
+    try
+        set failures to test failures of testResult
+        repeat with failure in failures
+            set failureMessages to failureMessages & (message of failure) & "\\n"
+        end repeat
+    end try
+
+    -- Get build log for statistics
+    set buildLog to ""
+    try
+        set buildLog to build log of testResult
+    end try
+
+    return "Status: " & testStatus & "\\n" & ¬
+           "Completed: " & testCompleted & "\\n" & ¬
+           "Failures:\\n" & failureMessages & "\\n" & ¬
+           "---LOG---\\n" & buildLog''' if wait_for_completion else 'return "Tests started successfully"'}
+end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if not success:
+        return f"Failed to run tests: {output}"
+
+    if not wait_for_completion:
+        return "✅ Tests have been started. Use get_latest_test_results to check results later."
+
+    # Parse the results
+    lines = output.split('\n')
+    status = ""
+    completed = False
+    failures_text = []
+    build_log = []
+    in_log = False
+    in_failures = False
+
+    for line in lines:
+        if line.startswith("Status: "):
+            status = line.replace("Status: ", "").strip()
+        elif line.startswith("Completed: "):
+            completed = line.replace("Completed: ", "").strip().lower() == "true"
+        elif line.startswith("Failures:"):
+            in_failures = True
+            in_log = False
+        elif line.startswith("---LOG---"):
+            in_log = True
+            in_failures = False
+        elif in_failures and line.strip() and not line.startswith("---"):
+            failures_text.append(line)
+        elif in_log:
+            build_log.append(line)
+
+    # Parse statistics from build log
+    build_log_str = '\n'.join(build_log)
+    stats = extract_test_statistics(build_log_str)
+
+    # Parse failures
+    failures = parse_test_failures('\n'.join(failures_text))
+
+    # Format the output
+    output_lines = []
+
+    if not completed:
+        output_lines.append(f"⏳ Tests did not complete within {max_wait_seconds} seconds")
+        output_lines.append(f"Status: {status}")
+        return '\n'.join(output_lines)
+
+    # Determine overall result
+    if status == "succeeded" or (stats["total"] > 0 and stats["failed"] == 0):
+        output_lines.append("✅ All tests passed")
+    elif status == "failed" or stats["failed"] > 0:
+        output_lines.append("❌ Tests failed")
+    else:
+        output_lines.append(f"Status: {status}")
+
+    output_lines.append("")
+    output_lines.append("Summary:")
+    if stats["total"] > 0:
+        output_lines.append(f"- Total: {stats['total']} tests")
+        output_lines.append(f"- Passed: {stats['passed']}")
+        output_lines.append(f"- Failed: {stats['failed']}")
+        if stats["skipped"] > 0:
+            output_lines.append(f"- Skipped: {stats['skipped']}")
+        if stats["duration"] > 0:
+            output_lines.append(f"- Duration: {stats['duration']:.1f} seconds")
+    else:
+        output_lines.append("- No test statistics available")
+
+    if failures:
+        output_lines.append("")
+        output_lines.append("Failures:")
+        for i, failure in enumerate(failures, 1):
+            output_lines.append(f"{i}. {failure['message']}")
+            if failure.get('file_path'):
+                location = failure['file_path']
+                if failure.get('line'):
+                    location += f":{failure['line']}"
+                output_lines.append(f"   Location: {location}")
+
+    return '\n'.join(output_lines)
+
+@mcp.tool()
+def get_latest_test_results(project_path: str) -> str:
+    """
+    Get the test results from the most recent test run.
+
+    Args:
+        project_path: Path to Xcode project/workspace directory
+
+    Returns:
+        Latest test results or "No test results available"
+    """
+    show_notification("Xcode MCP", f"Getting test results for {os.path.basename(project_path)}")
+
+    # Validate and normalize the project path
+    project_path = validate_and_normalize_project_path(project_path, "get_latest_test_results")
+
+    # Try to find the most recent xcresult bundle
+    xcresult_path = find_xcresult_bundle(project_path)
+
+    if xcresult_path and os.path.exists(xcresult_path):
+        # Extract test results from xcresult bundle
+        try:
+            # Get test summary
+            result = subprocess.run(
+                ['xcrun', 'xcresulttool', 'get', '--path', xcresult_path, '--format', 'json'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            if result.returncode == 0:
+                import json
+                try:
+                    data = json.loads(result.stdout)
+
+                    # Parse the JSON to extract test information
+                    output_lines = ["Test Results from xcresult bundle:", ""]
+
+                    # Try to extract metrics
+                    if 'metrics' in data:
+                        metrics = data['metrics']
+                        if 'testsCount' in metrics:
+                            output_lines.append(f"Total tests: {metrics.get('testsCount', {}).get('_value', 'N/A')}")
+                        if 'testsFailedCount' in metrics:
+                            output_lines.append(f"Failed tests: {metrics.get('testsFailedCount', {}).get('_value', 0)}")
+
+                    # Get modification time of xcresult
+                    import datetime
+                    mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(xcresult_path))
+                    output_lines.append(f"Test run: {mod_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+                    return '\n'.join(output_lines)
+                except:
+                    pass
+        except:
+            pass
+
+    # Fallback: Try to get from Xcode via AppleScript
+    escaped_path = escape_applescript_string(project_path)
+
+    script = f'''
+set projectPath to "{escaped_path}"
+
+tell application "Xcode"
+    try
+        -- Try to get the workspace document if it's already open
+        set workspaceDoc to first workspace document whose path is projectPath
+
+        -- Try to get last scheme action result
+        set lastResult to last scheme action result of workspaceDoc
+
+        set resultStatus to status of lastResult as string
+        set resultCompleted to completed of lastResult
+
+        -- Check if it was a test action by looking for test failures
+        set isTestResult to false
+        set failureMessages to ""
+        try
+            set failures to test failures of lastResult
+            set isTestResult to true
+            repeat with failure in failures
+                set failureMessages to failureMessages & (message of failure) & "\\n"
+            end repeat
+        end try
+
+        if isTestResult then
+            return "Last test status: " & resultStatus & "\\n" & ¬
+                   "Completed: " & resultCompleted & "\\n" & ¬
+                   "Test failures:\\n" & failureMessages
+        else
+            return "No test results available (last action was not a test)"
+        end if
+    on error
+        return "No test results available"
+    end try
+end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if success:
+        return output
+    else:
+        return "No test results available"
+
 # Main entry point for the server
 if __name__ == "__main__":
     # Parse command line arguments
