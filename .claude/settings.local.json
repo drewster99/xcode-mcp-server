@@ -19,7 +19,9 @@
       "Bash(xcrun xcresulttool get:*)",
       "mcp__xcode-mcp-server__build_project",
       "Bash(python:*)",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "Bash(xcrun simctl list:*)",
+      "Bash(python3:*)"
     ],
     "deny": []
   }
