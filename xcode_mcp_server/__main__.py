@@ -1961,29 +1961,31 @@ def parse_test_failures(failures_text: str) -> List[Dict[str, str]]:
     """
     Parse test failure information from AppleScript result.
     Returns list of failure dictionaries with message, file_path, etc.
+    Note: This is rarely used now since AppleScript test failures collection
+    is often empty; we primarily rely on extract_test_failures_from_log() instead.
     """
     failures = []
     if not failures_text or failures_text == "missing value" or failures_text.strip() == "":
         return failures
 
-    # Parse the new structured format
+    # Parse the structured format from AppleScript
     current_failure = {}
     for line in failures_text.strip().split('\n'):
         line = line.strip()
         if line.startswith("FAILURE: "):
             if current_failure:
                 failures.append(current_failure)
-            current_failure = {"message": line[9:], "file_path": "", "line": ""}
+            current_failure = {"message": line[9:], "file_path": "", "line_number": "", "test_class": "", "test_method": ""}
         elif line.startswith("FILE: "):
             if current_failure:
                 current_failure["file_path"] = line[6:]
         elif line.startswith("LINE: "):
             if current_failure:
-                current_failure["line"] = line[6:]
+                current_failure["line_number"] = line[6:]
         elif line.startswith("ERROR: "):
             # Handle error message about failure retrieval
             if not failures:
-                failures.append({"message": line[7:], "file_path": "", "line": ""})
+                failures.append({"message": line[7:], "file_path": "", "line_number": "", "test_class": "", "test_method": ""})
         elif line == "---":
             if current_failure:
                 failures.append(current_failure)
@@ -1991,7 +1993,7 @@ def parse_test_failures(failures_text: str) -> List[Dict[str, str]]:
         elif line and not line.startswith("---"):
             # Handle single line failure messages
             if not current_failure and line not in ["", "Failures:"]:
-                failures.append({"message": line, "file_path": "", "line": ""})
+                failures.append({"message": line, "file_path": "", "line_number": "", "test_class": "", "test_method": ""})
 
     # Add last failure if exists
     if current_failure and current_failure.get("message"):
@@ -2720,10 +2722,8 @@ end tell
             # Add location if available
             if failure.get('file_path') and failure['file_path'] not in ["", "missing value"]:
                 location = failure['file_path']
-                # Check both 'line_number' and 'line' for backward compatibility
-                line_num = failure.get('line_number') or failure.get('line')
-                if line_num and line_num not in ["", "missing value"]:
-                    location += f":{line_num}"
+                if failure.get('line_number') and failure['line_number'] not in ["", "missing value"]:
+                    location += f":{failure['line_number']}"
                 output_lines.append(f"   Location: {location}")
 
     return '\n'.join(output_lines)

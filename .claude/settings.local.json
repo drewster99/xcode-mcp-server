@@ -23,7 +23,8 @@
       "Bash(xcrun simctl list:*)",
       "Bash(python3:*)",
       "Bash(find:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(git log:*)"
     ],
     "deny": []
   }
