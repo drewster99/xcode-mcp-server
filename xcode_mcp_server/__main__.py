@@ -2048,6 +2048,7 @@ def extract_test_failures_from_log(build_log: str) -> List[Dict[str, str]]:
     """
     import re
     failures = []
+    seen_failures = set()  # Track unique failures to avoid duplicates
 
     if not build_log:
         return failures
@@ -2058,78 +2059,206 @@ def extract_test_failures_from_log(build_log: str) -> List[Dict[str, str]]:
         line = lines[i]
 
         # Look for test failure patterns
-        # Pattern 1: "Test Case '-[TestClass testMethod]' failed"
+        # Pattern 1: "Test Case '-[TestClass testMethod]' failed (x.xx seconds)"
         if "Test Case" in line and "failed" in line:
-            match = re.search(r"Test Case '(-\[(\w+)\s+(\w+)\])' failed", line)
+            match = re.search(r"Test Case '?-?\[(\w+)\s+(\w+)\]'?\s+failed", line)
             if match:
-                test_class = match.group(2)
-                test_method = match.group(3)
+                test_class = match.group(1)
+                test_method = match.group(2)
 
-                # Extract failure message from next lines
+                # Extract failure message and location from surrounding lines
                 failure_msg = ""
                 file_path = ""
                 line_num = ""
 
-                # Look ahead for assertion failure details
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1]
-                    # Pattern: "XCTAssertEqual failed: ("value1") is not equal to ("value2")"
-                    if "XCTAssert" in next_line or "failed:" in next_line:
-                        failure_msg = next_line.strip()
+                # Look at next few lines for assertion details
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    next_line = lines[j]
 
-                    # Pattern for file location: "/path/to/file.swift:123"
-                    file_match = re.search(r'(/.+\.swift):(\d+)', next_line)
-                    if file_match:
+                    # Look for XCTAssert failures or error messages
+                    if "XCTAssert" in next_line or "failed" in next_line.lower():
+                        if not failure_msg:
+                            failure_msg = next_line.strip()
+
+                    # Look for file:line patterns
+                    file_match = re.search(r'([\w/\-\.]+\.swift):(\d+)', next_line)
+                    if file_match and not file_path:
                         file_path = file_match.group(1)
                         line_num = file_match.group(2)
 
-                failures.append({
-                    "test_class": test_class,
-                    "test_method": test_method,
-                    "message": failure_msg or f"Test {test_method} failed",
-                    "file_path": file_path,
-                    "line_number": line_num
-                })
+                # Create a unique key to avoid duplicates
+                failure_key = f"{test_class}.{test_method}:{file_path}:{line_num}"
+                if failure_key not in seen_failures:
+                    seen_failures.add(failure_key)
+                    failures.append({
+                        "test_class": test_class,
+                        "test_method": test_method,
+                        "message": failure_msg or f"Test {test_class}.{test_method} failed",
+                        "file_path": file_path,
+                        "line_number": line_num
+                    })
 
-        # Pattern 2: Testing failures in Xcode 15+ format
-        # "❌ /path/to/file.swift:123: XCTAssertEqual failed"
-        elif "❌" in line:
-            # Extract file path and line number
-            match = re.search(r'❌\s+(/.+\.swift):(\d+):\s*(.+)', line)
+        # Pattern 2: XCTest output format with file location
+        # "	Executed 1 test, with 1 failure (0 unexpected) in 0.123 (0.456) seconds"
+        # "/path/to/TestFile.swift:42: error: -[TestClass testMethod] : XCTAssertEqual failed..."
+        elif ": error: -[" in line:
+            match = re.search(r'([\w/\-\.]+\.swift):(\d+):\s*error:\s*-\[(\w+)\s+(\w+)\]\s*:\s*(.+)', line)
             if match:
+                file_path = match.group(1)
+                line_num = match.group(2)
+                test_class = match.group(3)
+                test_method = match.group(4)
+                failure_msg = match.group(5)
+
+                # Create a unique key to avoid duplicates
+                failure_key = f"{test_class}.{test_method}:{file_path}:{line_num}"
+                if failure_key not in seen_failures:
+                    seen_failures.add(failure_key)
+                    failures.append({
+                        "test_class": test_class,
+                        "test_method": test_method,
+                        "message": failure_msg,
+                        "file_path": file_path,
+                        "line_number": line_num
+                    })
+
+        # Pattern 3: Xcode 15+ format with ❌ emoji
+        # "❌ /path/to/file.swift:123: XCTAssertEqual failed: ("actual") is not equal to ("expected")"
+        elif "❌" in line:
+            # Try to extract file path, line, and message
+            match = re.search(r'❌\s+([\w/\-\.]+\.swift):(\d+):\s*(.+)', line)
+            if not match:
+                # Try alternate format without file path
+                match = re.search(r'❌\s+(.+)', line)
+                if match:
+                    failure_msg = match.group(1)
+                    file_path = ""
+                    line_num = ""
+                else:
+                    i += 1
+                    continue
+            else:
                 file_path = match.group(1)
                 line_num = match.group(2)
                 failure_msg = match.group(3)
 
-                # Try to extract test name from context
-                test_name = ""
-                # Look back for test method name
-                for j in range(max(0, i-5), i):
-                    if "Test Case" in lines[j]:
-                        name_match = re.search(r"Test Case '(-\[(\w+)\s+(\w+)\])'", lines[j])
-                        if name_match:
-                            test_name = name_match.group(3)
-                            break
+            # Try to extract test name from previous lines
+            test_class = ""
+            test_method = ""
+            for j in range(max(0, i-5), i):
+                if "Test Case" in lines[j] or "-[" in lines[j]:
+                    name_match = re.search(r'-\[(\w+)\s+(\w+)\]', lines[j])
+                    if name_match:
+                        test_class = name_match.group(1)
+                        test_method = name_match.group(2)
+                        break
 
+            # Create a unique key to avoid duplicates
+            failure_key = f"{test_class or 'Unknown'}.{test_method or 'Unknown'}:{file_path}:{line_num}"
+            if failure_key not in seen_failures:
+                seen_failures.add(failure_key)
                 failures.append({
-                    "test_class": "",
-                    "test_method": test_name or "Unknown",
+                    "test_class": test_class or "Unknown",
+                    "test_method": test_method or "Unknown",
                     "message": failure_msg,
                     "file_path": file_path,
                     "line_number": line_num
                 })
 
+        # Pattern 4: Test Suite failures
+        # "Test Suite 'TestClassName' failed at 2024-01-01 12:00:00.000"
+        elif "Test Suite" in line and "failed" in line:
+            match = re.search(r"Test Suite '(\w+)' failed", line)
+            if match:
+                test_class = match.group(1)
+                # Look for details in next lines
+                failure_msg = f"Test suite {test_class} failed"
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    if "Executed" in lines[j] and "failure" in lines[j]:
+                        failure_msg = lines[j].strip()
+                        break
+
+                # For suite failures, we only track by test class name
+                failure_key = f"{test_class}.Suite"
+                if failure_key not in seen_failures:
+                    seen_failures.add(failure_key)
+                    failures.append({
+                        "test_class": test_class,
+                        "test_method": "Suite",
+                        "message": failure_msg,
+                        "file_path": "",
+                        "line_number": ""
+                    })
+
+        # Pattern 5: Simple failure messages with test name context
+        # "XCTAssertTrue failed - Some description"
+        elif re.search(r'XCTAssert\w+\s+failed', line):
+            failure_msg = line.strip()
+
+            # Try to find test context from previous lines
+            test_class = ""
+            test_method = ""
+            file_path = ""
+            line_num = ""
+
+            # Look back for test case info
+            for j in range(max(0, i-10), i):
+                if "Test Case" in lines[j]:
+                    name_match = re.search(r'-\[(\w+)\s+(\w+)\]', lines[j])
+                    if name_match:
+                        test_class = name_match.group(1)
+                        test_method = name_match.group(2)
+                        break
+
+            # Look for file location
+            file_match = re.search(r'([\w/\-\.]+\.swift):(\d+)', line)
+            if file_match:
+                file_path = file_match.group(1)
+                line_num = file_match.group(2)
+
+            if test_class or test_method or failure_msg != line.strip():
+                # Create a unique key to avoid duplicates
+                failure_key = f"{test_class or 'Unknown'}.{test_method or 'Unknown'}:{file_path}:{line_num}:{failure_msg[:50]}"
+                if failure_key not in seen_failures:
+                    seen_failures.add(failure_key)
+                    failures.append({
+                        "test_class": test_class or "Unknown",
+                        "test_method": test_method or "Unknown",
+                        "message": failure_msg,
+                        "file_path": file_path,
+                        "line_number": line_num
+                    })
+
         i += 1
 
-    # If we still don't have failures but the test failed, add a generic failure
+    # If we still don't have specific failures but know tests failed,
+    # try to extract any useful information
     if not failures and ("failed" in build_log.lower() or "❌" in build_log):
-        failures.append({
-            "test_class": "Unknown",
-            "test_method": "Unknown",
-            "message": "Test failed (details could not be extracted from log)",
-            "file_path": "",
-            "line_number": ""
-        })
+        # Look for summary lines
+        for line in lines:
+            if "Executed" in line and "failure" in line:
+                match = re.search(r'Executed (\d+) tests?, with (\d+) failures?', line)
+                if match:
+                    test_count = match.group(1)
+                    failure_count = match.group(2)
+                    failures.append({
+                        "test_class": "TestSuite",
+                        "test_method": "Multiple",
+                        "message": f"Executed {test_count} tests with {failure_count} failures (details not available in log)",
+                        "file_path": "",
+                        "line_number": ""
+                    })
+                    break
+
+        # If still nothing, add generic failure
+        if not failures:
+            failures.append({
+                "test_class": "Unknown",
+                "test_method": "Unknown",
+                "message": "Tests failed (specific details could not be extracted from log)",
+                "file_path": "",
+                "line_number": ""
+            })
 
     return failures
 
@@ -2469,15 +2598,44 @@ end tell
     build_log_str = '\n'.join(build_log)
     stats = extract_test_statistics(build_log_str)
 
+    # Save build log for debugging if environment variable is set
+    if os.environ.get('XCODE_MCP_DEBUG_LOGS'):
+        import tempfile
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = os.path.join(tempfile.gettempdir(), f"xcode_mcp_test_log_{timestamp}.txt")
+        try:
+            with open(log_path, 'w') as f:
+                f.write(f"Test run at {timestamp}\n")
+                f.write(f"Project: {project_path}\n")
+                f.write(f"Status: {status}\n")
+                f.write(f"Completed: {completed}\n")
+                f.write(f"Failure count: {failure_count}\n")
+                f.write("\n--- BUILD LOG ---\n")
+                f.write(build_log_str)
+                f.write("\n--- FAILURES TEXT ---\n")
+                f.write('\n'.join(failures_text))
+            print(f"DEBUG: Test log saved to {log_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"DEBUG: Failed to save test log: {e}", file=sys.stderr)
+
     # Parse failures
     failures = []
     failures_str = '\n'.join(failures_text)
 
     # Check if we need to parse failures from the build log
     if "PARSE_FROM_LOG" in failures_str and build_log_str:
+        # Debug: Log that we're parsing from log
+        print(f"DEBUG: Parsing test failures from build log (AppleScript collection was empty)", file=sys.stderr)
+        print(f"DEBUG: Build log length: {len(build_log_str)} chars", file=sys.stderr)
+
         # Extract test failures from build log
         failures = extract_test_failures_from_log(build_log_str)
         failure_count = len(failures)
+
+        print(f"DEBUG: Found {len(failures)} failures from build log parsing", file=sys.stderr)
+        for idx, failure in enumerate(failures):
+            print(f"DEBUG: Failure {idx + 1}: {failure.get('test_class', 'Unknown')}.{failure.get('test_method', 'Unknown')} - {failure.get('message', 'No message')}", file=sys.stderr)
     else:
         # Parse from AppleScript output
         failures = parse_test_failures(failures_str)
@@ -2549,11 +2707,23 @@ end tell
         output_lines.append("")
         output_lines.append(f"Failed Tests ({len(failures)}):")
         for i, failure in enumerate(failures, 1):
-            output_lines.append(f"\n{i}. {failure['message']}")
-            if failure.get('file_path') and failure['file_path'] != "missing value":
+            # Format test identifier if available
+            test_id = ""
+            if failure.get('test_class') and failure['test_class'] != "Unknown":
+                test_id = f"[{failure['test_class']}"
+                if failure.get('test_method') and failure['test_method'] != "Unknown":
+                    test_id += f".{failure['test_method']}"
+                test_id += "] "
+
+            output_lines.append(f"\n{i}. {test_id}{failure.get('message', 'Test failed')}")
+
+            # Add location if available
+            if failure.get('file_path') and failure['file_path'] not in ["", "missing value"]:
                 location = failure['file_path']
-                if failure.get('line') and failure['line'] != "missing value":
-                    location += f":{failure['line']}"
+                # Check both 'line_number' and 'line' for backward compatibility
+                line_num = failure.get('line_number') or failure.get('line')
+                if line_num and line_num not in ["", "missing value"]:
+                    location += f":{line_num}"
                 output_lines.append(f"   Location: {location}")
 
     return '\n'.join(output_lines)
