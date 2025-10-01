@@ -205,6 +205,9 @@ mcp = FastMCP("Xcode MCP Server",
         - clean_project: Clean build artifacts
         - stop_project: Stop any currently running build or run operation
         - get_runtime_output: Get console output from the most recent run
+        - list_booted_simulators: List all currently booted iOS simulators
+        - take_screenshot_xcode: Take a screenshot of the Xcode window for a project
+        - take_simulator_screenshot: Take a screenshot of a booted simulator
     """
 )
 
@@ -1143,6 +1146,269 @@ def get_runtime_output(project_path: str,
     header += "=" * 60 + "\n"
 
     return header + console_output
+
+@mcp.tool()
+def list_booted_simulators() -> str:
+    """
+    List all currently booted iOS simulators.
+
+    Returns:
+        A formatted list of booted simulators with their names, UDIDs, and OS versions.
+        Returns "No booted simulators found" if none are running.
+    """
+    show_notification("Xcode MCP", "Listing booted simulators")
+
+    try:
+        # Run simctl to get list of devices in JSON format
+        result = subprocess.run(
+            ['xcrun', 'simctl', 'list', 'devices', '--json'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            raise XCodeMCPError(f"Failed to list simulators: {result.stderr}")
+
+        # Parse JSON output
+        devices_data = json.loads(result.stdout)
+        booted_simulators = []
+
+        # Iterate through all device types
+        for runtime, devices in devices_data.get('devices', {}).items():
+            # Extract OS version from runtime string (e.g., "com.apple.CoreSimulator.SimRuntime.iOS-17-0" -> "iOS 17.0")
+            os_version = runtime.replace('com.apple.CoreSimulator.SimRuntime.', '')
+            # Convert dashes to dots for version numbers (iOS-17-0 -> iOS 17.0)
+            parts = os_version.split('-')
+            if len(parts) >= 3:
+                os_version = f"{parts[0]} {parts[1]}.{parts[2]}"
+            else:
+                os_version = os_version.replace('-', ' ')
+
+            for device in devices:
+                if device.get('state') == 'Booted':
+                    booted_simulators.append({
+                        'name': device.get('name', 'Unknown'),
+                        'udid': device.get('udid', 'Unknown'),
+                        'os': os_version,
+                        'device_type': device.get('deviceTypeIdentifier', '').split('.')[-1] if device.get('deviceTypeIdentifier') else 'Unknown'
+                    })
+
+        if not booted_simulators:
+            return "No booted simulators found"
+
+        # Format output
+        output_lines = [f"Found {len(booted_simulators)} booted simulator(s):", ""]
+
+        for sim in booted_simulators:
+            output_lines.append(f"• {sim['name']}")
+            output_lines.append(f"  UDID: {sim['udid']}")
+            output_lines.append(f"  OS: {sim['os']}")
+            output_lines.append(f"  Type: {sim['device_type']}")
+            output_lines.append("")
+
+        return "\n".join(output_lines)
+
+    except json.JSONDecodeError as e:
+        raise XCodeMCPError(f"Failed to parse simulator list: {e}")
+    except subprocess.TimeoutExpired:
+        raise XCodeMCPError("Timeout while listing simulators")
+    except Exception as e:
+        raise XCodeMCPError(f"Error listing simulators: {e}")
+
+@mcp.tool()
+def take_screenshot_xcode(project_path: str) -> str:
+    """
+    Take a screenshot of the Xcode window for the specified project.
+
+    Args:
+        project_path: Path to an Xcode project/workspace directory.
+
+    Returns:
+        The file path to the saved screenshot.
+
+    Raises:
+        XCodeMCPError: If Xcode window is not found or screenshot fails.
+    """
+    # Validate and normalize path
+    normalized_path = validate_and_normalize_project_path(project_path, "Taking Xcode screenshot for")
+    escaped_path = escape_applescript_string(normalized_path)
+
+    try:
+        # Get the workspace name (used as window title in Xcode)
+        workspace_name = os.path.basename(normalized_path)
+        escaped_workspace_name = escape_applescript_string(workspace_name)
+
+        # Get the window ID via AppleScript
+        script = f'''
+        tell application "Xcode"
+            -- First, try to find the window by exact path match
+            repeat with w in windows
+                try
+                    if path of document of w is "{escaped_path}" then
+                        return id of w
+                    end if
+                end try
+            end repeat
+
+            -- If not found by path, try by name (less reliable but fallback)
+            try
+                return id of window "{escaped_workspace_name}"
+            on error
+                error "No Xcode window found for project: {escaped_workspace_name}"
+            end try
+        end tell
+        '''
+
+        success, window_id = run_applescript(script)
+        if not success:
+            raise XCodeMCPError(f"Failed to get Xcode window: {window_id}")
+
+        window_id = window_id.strip()
+        if not window_id:
+            raise XCodeMCPError(f"No Xcode window found for project: {workspace_name}")
+
+        print(f"Found Xcode window with ID: {window_id}", file=sys.stderr)
+
+        # Create screenshot directory
+        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
+        os.makedirs(screenshot_dir, exist_ok=True)
+
+        # Generate filename with timestamp
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', workspace_name)
+        filename = f"xcode_{safe_name}_{timestamp}.png"
+        screenshot_path = os.path.join(screenshot_dir, filename)
+
+        print(f"Taking screenshot of Xcode window for '{workspace_name}'", file=sys.stderr)
+
+        # Capture the screenshot using screencapture
+        result = subprocess.run(
+            ["screencapture", "-l", window_id, "-x", "-o", screenshot_path],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            raise XCodeMCPError(f"Failed to capture screenshot: {result.stderr}")
+
+        # Verify the file was created
+        if not os.path.exists(screenshot_path):
+            raise XCodeMCPError("Screenshot file was not created")
+
+        print(f"Screenshot saved to: {screenshot_path}", file=sys.stderr)
+        return screenshot_path
+
+    except subprocess.TimeoutExpired:
+        raise XCodeMCPError("Timeout while taking screenshot")
+    except Exception as e:
+        if isinstance(e, XCodeMCPError):
+            raise
+        raise XCodeMCPError(f"Error taking Xcode screenshot: {e}")
+
+@mcp.tool()
+def take_simulator_screenshot(udid: Optional[str] = None) -> str:
+    """
+    Take a screenshot of a booted iOS simulator.
+
+    Args:
+        udid: Optional UDID of the simulator to screenshot. If not provided or empty,
+              uses the first booted simulator found.
+
+    Returns:
+        The file path to the saved screenshot.
+
+    Raises:
+        XCodeMCPError: If no booted simulators found or specified simulator is not booted.
+    """
+    show_notification("Xcode MCP", "Taking simulator screenshot")
+
+    try:
+        # Get list of booted simulators
+        result = subprocess.run(
+            ['xcrun', 'simctl', 'list', 'devices', '--json'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            raise XCodeMCPError(f"Failed to list simulators: {result.stderr}")
+
+        devices_data = json.loads(result.stdout)
+        booted_simulators = []
+
+        # Find all booted simulators
+        for runtime, devices in devices_data.get('devices', {}).items():
+            for device in devices:
+                if device.get('state') == 'Booted':
+                    booted_simulators.append({
+                        'name': device.get('name', 'Unknown'),
+                        'udid': device.get('udid'),
+                    })
+
+        if not booted_simulators:
+            raise XCodeMCPError("No booted simulators found")
+
+        # Determine which simulator to use
+        target_udid = None
+        target_name = None
+
+        if udid and udid.strip():
+            # User specified a UDID
+            udid = udid.strip()
+            for sim in booted_simulators:
+                if sim['udid'] == udid:
+                    target_udid = udid
+                    target_name = sim['name']
+                    break
+
+            if not target_udid:
+                raise XCodeMCPError(f"Simulator with UDID '{udid}' is not booted or does not exist")
+        else:
+            # Use first booted simulator
+            target_udid = booted_simulators[0]['udid']
+            target_name = booted_simulators[0]['name']
+
+        # Create screenshot directory
+        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
+        os.makedirs(screenshot_dir, exist_ok=True)
+
+        # Generate filename with timestamp
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', target_name)
+        filename = f"simulator_{safe_name}_{timestamp}.png"
+        screenshot_path = os.path.join(screenshot_dir, filename)
+
+        print(f"Taking screenshot of '{target_name}' (UDID: {target_udid})", file=sys.stderr)
+
+        # Take the screenshot
+        result = subprocess.run(
+            ['xcrun', 'simctl', 'io', target_udid, 'screenshot', screenshot_path],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            raise XCodeMCPError(f"Failed to take screenshot: {result.stderr}")
+
+        # Verify the file was created
+        if not os.path.exists(screenshot_path):
+            raise XCodeMCPError("Screenshot file was not created")
+
+        print(f"Screenshot saved to: {screenshot_path}", file=sys.stderr)
+        return screenshot_path
+
+    except json.JSONDecodeError as e:
+        raise XCodeMCPError(f"Failed to parse simulator list: {e}")
+    except subprocess.TimeoutExpired:
+        raise XCodeMCPError("Timeout while taking screenshot")
+    except Exception as e:
+        if isinstance(e, XCodeMCPError):
+            raise
+        raise XCodeMCPError(f"Error taking screenshot: {e}")
 
 # Main entry point for the server
 if __name__ == "__main__":
