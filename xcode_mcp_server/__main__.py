@@ -6,8 +6,6 @@ import json
 import argparse
 import time
 import re
-import tempfile
-from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple, Set
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -1557,7 +1555,6 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 
         # Write Swift code to temporary file and execute
         import tempfile
-        import os
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.swift', delete=False) as f:
             f.write(swift_code)
@@ -1676,16 +1673,22 @@ def take_window_screenshot(window_id_or_name: str) -> str:
             raise XCodeMCPError(f"No windows found matching '{window_id_or_name}'")
 
         # Take screenshots
+        import uuid
         screenshot_paths = []
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+        # Create screenshot directory
+        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
+        os.makedirs(screenshot_dir, exist_ok=True)
 
         for window_id, window_title, app_name in matches:
             # Sanitize window title for filename
             safe_title = "".join(c for c in window_title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
             safe_app = "".join(c for c in app_name if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
+            unique_id = uuid.uuid4().hex[:8]
 
-            filename = f"window_{window_id}_{safe_app}_{safe_title}_{timestamp}.png"
-            screenshot_path = os.path.join(tempfile.gettempdir(), filename)
+            filename = f"window_{window_id}_{safe_app}_{safe_title}_{timestamp}_{unique_id}.png"
+            screenshot_path = os.path.join(screenshot_dir, filename)
 
             # Take the screenshot using screencapture
             result = subprocess.run(
@@ -1769,16 +1772,22 @@ def take_app_screenshot(app_name: str) -> str:
         windows = windows[:5]
 
         # Take screenshots
+        import uuid
         screenshot_paths = []
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+        # Create screenshot directory
+        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
+        os.makedirs(screenshot_dir, exist_ok=True)
 
         for window in windows:
             # Sanitize names for filename
             safe_title = "".join(c for c in window['title'] if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
             safe_app = "".join(c for c in app_matched if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
+            unique_id = uuid.uuid4().hex[:8]
 
-            filename = f"app_{safe_app}_window_{window['id']}_{safe_title}_{timestamp}.png"
-            screenshot_path = os.path.join(tempfile.gettempdir(), filename)
+            filename = f"app_{safe_app}_window_{window['id']}_{safe_title}_{timestamp}_{unique_id}.png"
+            screenshot_path = os.path.join(screenshot_dir, filename)
 
             # Take the screenshot using screencapture
             result = subprocess.run(
@@ -1852,7 +1861,6 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 
     # Write Swift code to temporary file and execute
     import tempfile
-    import os
 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.swift', delete=False) as f:
         f.write(swift_code)
