@@ -1963,28 +1963,39 @@ def parse_test_failures(failures_text: str) -> List[Dict[str, str]]:
     Returns list of failure dictionaries with message, file_path, etc.
     """
     failures = []
-    if not failures_text or failures_text == "missing value":
+    if not failures_text or failures_text == "missing value" or failures_text.strip() == "":
         return failures
 
-    # Parse each failure line
+    # Parse the new structured format
+    current_failure = {}
     for line in failures_text.strip().split('\n'):
-        if line.strip():
-            # Try to parse format: "TestClass.testMethod: message at file.swift:123"
-            failure = {"message": line.strip(), "file_path": "", "line": ""}
+        line = line.strip()
+        if line.startswith("FAILURE: "):
+            if current_failure:
+                failures.append(current_failure)
+            current_failure = {"message": line[9:], "file_path": "", "line": ""}
+        elif line.startswith("FILE: "):
+            if current_failure:
+                current_failure["file_path"] = line[6:]
+        elif line.startswith("LINE: "):
+            if current_failure:
+                current_failure["line"] = line[6:]
+        elif line.startswith("ERROR: "):
+            # Handle error message about failure retrieval
+            if not failures:
+                failures.append({"message": line[7:], "file_path": "", "line": ""})
+        elif line == "---":
+            if current_failure:
+                failures.append(current_failure)
+                current_failure = {}
+        elif line and not line.startswith("---"):
+            # Handle single line failure messages
+            if not current_failure and line not in ["", "Failures:"]:
+                failures.append({"message": line, "file_path": "", "line": ""})
 
-            # Extract file location if present
-            if " at " in line:
-                parts = line.split(" at ", 1)
-                failure["message"] = parts[0].strip()
-                location = parts[1].strip()
-                if ":" in location:
-                    file_parts = location.rsplit(":", 1)
-                    failure["file_path"] = file_parts[0]
-                    failure["line"] = file_parts[1]
-                else:
-                    failure["file_path"] = location
-
-            failures.append(failure)
+    # Add last failure if exists
+    if current_failure and current_failure.get("message"):
+        failures.append(current_failure)
 
     return failures
 
@@ -2078,14 +2089,12 @@ def find_xcresult_bundle(project_path: str) -> Optional[str]:
 # =============================================================================
 
 @mcp.tool()
-def list_project_tests(project_path: str,
-                       scheme: Optional[str] = None) -> str:
+def list_project_tests(project_path: str) -> str:
     """
     List all available tests in the specified Xcode project or workspace.
 
     Args:
         project_path: Path to Xcode project/workspace directory
-        scheme: Optional scheme to inspect (uses active scheme if not specified)
 
     Returns:
         A list of all test identifiers in the format:
@@ -2099,90 +2108,59 @@ def list_project_tests(project_path: str,
     # Escape for AppleScript
     escaped_path = escape_applescript_string(project_path)
 
-    # AppleScript to list tests
     # Note: There's no direct way to list all tests via AppleScript,
-    # so we'll try to get this information from a test build
-    script = f'''
-set projectPath to "{escaped_path}"
+    # so we'll look for test files in the project directory
 
-tell application "Xcode"
-    -- Try to open the project
-    try
-        open projectPath
-        delay 1
+    # Try to find test files in the project
+    try:
+        # Find test files in the project directory
+        project_dir = os.path.dirname(project_path)
+        test_files = []
 
-        -- Get the workspace document
-        set workspaceDoc to first workspace document whose path is projectPath
+        result = subprocess.run(
+            ['find', project_dir, '-name', '*Tests.swift', '-o', '-name', '*Test.swift'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
 
-        -- Get the active scheme if not specified
-        set schemeName to missing value
-        {f'set schemeName to "{escape_applescript_string(scheme)}"' if scheme else 'set schemeName to name of active scheme of workspaceDoc'}
+        if result.returncode == 0 and result.stdout:
+            test_files = result.stdout.strip().split('\n')
 
-        -- We'll need to analyze the test action or build log
-        -- For now, return scheme information
-        return "Scheme: " & schemeName & "\\n" & ¬
-               "Note: To get detailed test list, run tests with list-only flag"
-    on error errMsg
-        return "Could not open project: " & errMsg
-    end try
-end tell
-    '''
+            # Parse test files to extract test methods
+            tests = []
+            for file_path in test_files:
+                if file_path and os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r') as f:
+                            content = f.read()
+                            # Extract test class name from filename
+                            filename = os.path.basename(file_path)
+                            class_name = filename.replace('.swift', '')
 
-    success, output = run_applescript(script)
+                            # Find test methods (simple regex)
+                            import re
+                            test_methods = re.findall(r'func\s+(test\w+)\s*\(', content)
 
-    if not success:
-        # Try alternative: look for test files in the project
-        try:
-            # Find test files in the project directory
-            project_dir = os.path.dirname(project_path)
-            test_files = []
+                            for method in test_methods:
+                                # Guess bundle name from path
+                                if 'UITests' in file_path:
+                                    bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}UITests"
+                                else:
+                                    bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}Tests"
 
-            result = subprocess.run(
-                ['find', project_dir, '-name', '*Tests.swift', '-o', '-name', '*Test.swift'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+                                tests.append(f"{bundle}/{class_name}/{method}")
+                    except:
+                        continue
 
-            if result.returncode == 0 and result.stdout:
-                test_files = result.stdout.strip().split('\n')
+            if tests:
+                return "\n".join(sorted(tests))
 
-                # Parse test files to extract test methods
-                tests = []
-                for file_path in test_files:
-                    if file_path and os.path.exists(file_path):
-                        try:
-                            with open(file_path, 'r') as f:
-                                content = f.read()
-                                # Extract test class name from filename
-                                filename = os.path.basename(file_path)
-                                class_name = filename.replace('.swift', '')
+        return f"Could not find test files for project: {os.path.basename(project_path)}\n" + \
+               "Make sure your test files follow naming convention (*Test.swift or *Tests.swift)"
 
-                                # Find test methods (simple regex)
-                                import re
-                                test_methods = re.findall(r'func\s+(test\w+)\s*\(', content)
-
-                                for method in test_methods:
-                                    # Guess bundle name from path
-                                    if 'UITests' in file_path:
-                                        bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '')}UITests"
-                                    else:
-                                        bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '')}Tests"
-
-                                    tests.append(f"{bundle}/{class_name}/{method}")
-                        except:
-                            continue
-
-                if tests:
-                    return "Available tests:\n" + "\n".join(sorted(tests))
-
-            return f"Could not retrieve test list for scheme: {scheme or 'active scheme'}\n" + \
-                   "To see available tests, run the tests once or check test files in the project."
-
-        except Exception as e:
-            return f"Error listing tests: {str(e)}"
-
-    return output
+    except Exception as e:
+        return f"Error listing tests: {str(e)}"
 
 @mcp.tool()
 def run_project_tests(project_path: str,
@@ -2283,13 +2261,52 @@ tell application "Xcode"
     set testStatus to status of testResult as string
     set testCompleted to completed of testResult
 
-    -- Get failures if any
+    -- Get failures if any with full details
     set failureMessages to ""
+    set failureCount to 0
     try
         set failures to test failures of testResult
-        repeat with failure in failures
-            set failureMessages to failureMessages & (message of failure) & "\\n"
-        end repeat
+        set failureCount to count of failures
+        if failureCount > 0 then
+            repeat with failure in failures
+                set failureMsg to ""
+                set failurePath to ""
+                set failureLine to ""
+
+                try
+                    set failureMsg to message of failure
+                on error
+                    set failureMsg to "Unknown test failure"
+                end try
+
+                try
+                    set failurePath to file path of failure
+                end try
+
+                try
+                    set failureLine to starting line number of failure as string
+                end try
+
+                set failureMessages to failureMessages & "FAILURE: " & failureMsg & "\\n"
+                if failurePath is not "" and failurePath is not missing value then
+                    set failureMessages to failureMessages & "FILE: " & failurePath & "\\n"
+                end if
+                if failureLine is not "" and failureLine is not "missing value" then
+                    set failureMessages to failureMessages & "LINE: " & failureLine & "\\n"
+                end if
+                set failureMessages to failureMessages & "---\\n"
+            end repeat
+        else
+            -- No test failures in collection, but status might still be failed
+            if testStatus is "failed" or testStatus contains "fail" then
+                set failureMessages to "Test failed but no detailed failure information available\\n"
+            end if
+        end if
+    on error errMsg
+        -- Could not access test failures
+        if testStatus is "failed" or testStatus contains "fail" then
+            set failureMessages to "ERROR: Could not retrieve test failure details: " & errMsg & "\\n"
+        end if
     end try
 
     -- Get build log for statistics
@@ -2300,6 +2317,7 @@ tell application "Xcode"
 
     return "Status: " & testStatus & "\\n" & ¬
            "Completed: " & testCompleted & "\\n" & ¬
+           "FailureCount: " & (failureCount as string) & "\\n" & ¬
            "Failures:\\n" & failureMessages & "\\n" & ¬
            "---LOG---\\n" & buildLog''' if wait_for_completion else 'return "Tests started successfully"'}
 end tell
@@ -2313,10 +2331,14 @@ end tell
     if not wait_for_completion:
         return "✅ Tests have been started. Use get_latest_test_results to check results later."
 
+    # Debug: Log raw output to see what we're getting
+    print(f"DEBUG: Raw test output:\n{output}\n", file=sys.stderr)
+
     # Parse the results
     lines = output.split('\n')
     status = ""
     completed = False
+    failure_count = 0
     failures_text = []
     build_log = []
     in_log = False
@@ -2327,13 +2349,18 @@ end tell
             status = line.replace("Status: ", "").strip()
         elif line.startswith("Completed: "):
             completed = line.replace("Completed: ", "").strip().lower() == "true"
+        elif line.startswith("FailureCount: "):
+            try:
+                failure_count = int(line.replace("FailureCount: ", "").strip())
+            except:
+                failure_count = 0
         elif line.startswith("Failures:"):
             in_failures = True
             in_log = False
         elif line.startswith("---LOG---"):
             in_log = True
             in_failures = False
-        elif in_failures and line.strip() and not line.startswith("---"):
+        elif in_failures and not line.startswith("---LOG"):
             failures_text.append(line)
         elif in_log:
             build_log.append(line)
@@ -2344,6 +2371,37 @@ end tell
 
     # Parse failures
     failures = parse_test_failures('\n'.join(failures_text))
+
+    # Use failure count if we have it
+    if failure_count > 0 and stats["failed"] == 0:
+        stats["failed"] = failure_count
+
+    # If we didn't get stats from build log, try to get from xcresult
+    if stats["total"] == 0 and completed:
+        # Wait a moment for xcresult to be written
+        time.sleep(2)
+        xcresult_path = find_xcresult_bundle(project_path)
+        if xcresult_path:
+            try:
+                # Try to get test count from xcresult
+                result = subprocess.run(
+                    ['xcrun', 'xcresulttool', 'get', '--path', xcresult_path, '--format', 'json'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode == 0:
+                    import json
+                    data = json.loads(result.stdout)
+                    if 'metrics' in data:
+                        metrics = data['metrics']
+                        if 'testsCount' in metrics:
+                            stats["total"] = metrics.get('testsCount', {}).get('_value', 0)
+                        if 'testsFailedCount' in metrics:
+                            stats["failed"] = metrics.get('testsFailedCount', {}).get('_value', 0)
+                            stats["passed"] = stats["total"] - stats["failed"]
+            except:
+                pass
 
     # Format the output
     output_lines = []
@@ -2372,16 +2430,19 @@ end tell
         if stats["duration"] > 0:
             output_lines.append(f"- Duration: {stats['duration']:.1f} seconds")
     else:
-        output_lines.append("- No test statistics available")
+        output_lines.append("- No detailed test statistics available from Xcode")
+        output_lines.append(f"- Test run status: {status}")
+        if status == "succeeded":
+            output_lines.append("- All tests in scheme passed successfully")
 
     if failures:
         output_lines.append("")
-        output_lines.append("Failures:")
+        output_lines.append(f"Failed Tests ({len(failures)}):")
         for i, failure in enumerate(failures, 1):
-            output_lines.append(f"{i}. {failure['message']}")
-            if failure.get('file_path'):
+            output_lines.append(f"\n{i}. {failure['message']}")
+            if failure.get('file_path') and failure['file_path'] != "missing value":
                 location = failure['file_path']
-                if failure.get('line'):
+                if failure.get('line') and failure['line'] != "missing value":
                     location += f":{failure['line']}"
                 output_lines.append(f"   Location: {location}")
 
