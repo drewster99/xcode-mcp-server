@@ -21,7 +21,9 @@
       "Bash(python:*)",
       "Bash(bash:*)",
       "Bash(xcrun simctl list:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(find:*)",
+      "Bash(wc:*)"
     ],
     "deny": []
   }

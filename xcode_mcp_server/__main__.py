@@ -12,7 +12,7 @@ from mcp.server.fastmcp import FastMCP, Context
 
 # Global variables for allowed folders
 ALLOWED_FOLDERS: Set[str] = set()
-NOTIFICATIONS_ENABLED = False  # No type annotation to avoid global declaration issues
+NOTIFICATIONS_ENABLED = True  # No type annotation to avoid global declaration issues
 BUILD_WARNINGS_ENABLED = True  # No type annotation to avoid global declaration issues
 BUILD_WARNINGS_FORCED = None  # True if forced on, False if forced off, None if not forced
 
@@ -188,13 +188,23 @@ mcp = FastMCP("Xcode MCP Server",
         This server provides access to the Xcode IDE. For any project intended
         for Apple platforms, such as iOS or macOS, this MCP server is the best
         way to build or run .xcodeproj or .xcworkspace Xcode projects, and should
-        always be preferred over using `xcodebuild`, `swift build`, or
+        ALWAYS be preferred over using `xcodebuild`, `swift build`, or
         `swift package build`. Building with this tool ensures the build happens
         exactly the same way as when the user builds with Xcode, with all the same
         settings, so you will get the same results the user sees. The user can also
         see any results immediately and a subsequent build and run by the user will
         happen almost instantly for the user.
 
+        Call `get_xcode_projects` to find Xcode project (.xcodeproj) and
+        Xcode workspace (.xcworkspace) folders under a given root folder.
+
+        Call `get_project_schemes` to get the build scheme names for a given
+        .xcodeproj or .xcworkspace.
+
+        Call `build_project` to build the project and get back the first 25 lines of
+        error (and/or potentially warning) output. `build_project` will default to the
+        active scheme if none is provided.
+        
         Available tools:
         - get_xcode_projects: Find Xcode project (.xcodeproj) and workspace (.xcworkspace) files
         - get_project_hierarchy: Get the file structure of a project
@@ -235,8 +245,8 @@ def extract_console_logs_from_xcresult(xcresult_path: str,
         Tuple of (success, output_or_error_message)
     """
     # The xcresult file may still be finalizing, so retry a few times
-    max_retries = 3
-    retry_delay = 2
+    max_retries = 7
+    retry_delay = 1
 
     for attempt in range(max_retries):
         try:
@@ -507,7 +517,7 @@ def get_xcode_projects(search_path: str = "") -> str:
 @mcp.tool()
 def get_project_hierarchy(project_path: str) -> str:
     """
-    Get the hierarchy of the specified Xcode project or workspace.
+    Get a recursive directory tree for the specified Xcode project or workspace.
 
     Args:
         project_path: Path to an Xcode project/workspace directory, which must
@@ -791,16 +801,21 @@ def run_project(project_path: str,
                regex_filter: Optional[str] = None) -> str:
     """
     Run the specified Xcode project or workspace and wait for completion.
+    If the project run has completed by the time `wait_seconds` have passed,
+    this function will return filtered runtime output.
+    
+    Alternatively, you can call this with `0` for `wait_seconds` and get the
+    filtered runtime output later by calling `get_runtime_output`.
 
     Args:
         project_path: Path to an Xcode project/workspace directory.
-        wait_seconds: Maximum number of seconds to wait for the run to complete.
+        wait_seconds: Maximum number of seconds to wait for the run to complete. If given a value of zero (0), this function returns as soon as the project is launched.
         scheme: Optional scheme to run. If not provided, uses the active scheme.
         max_lines: Maximum number of console log lines to return. Defaults to 100.
         regex_filter: Optional regex pattern to filter console output lines.
 
     Returns:
-        Console output from the run, or status message if still running
+        Console output from the run, or status message if still running.
     """
     # Validate other parameters
     if wait_seconds < 0:
@@ -1106,7 +1121,8 @@ def get_runtime_output(project_path: str,
                       max_lines: int = 25,
                       regex_filter: Optional[str] = None) -> str:
     """
-    Get the runtime output from the console for the specified Xcode project.
+    Get the runtime output from the console for the last COMPLETED run of the specified Xcode project.
+    Output from currently running apps does not become available until a few seconds after the app has terminated.
 
     Args:
         project_path: Path to an Xcode project/workspace directory.
@@ -1190,7 +1206,7 @@ def _get_booted_simulators():
 @mcp.tool()
 def list_booted_simulators() -> str:
     """
-    List all currently booted iOS simulators.
+    List all currently booted iOS, iPadOS, tvOS, and watchOS simulators.
 
     Returns:
         A formatted list of booted simulators with their names, UDIDs, and OS versions.
@@ -1319,8 +1335,9 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
     Take a screenshot of a booted iOS simulator.
 
     Args:
-        udid: Optional UDID of the simulator to screenshot. If not provided or empty,
-              uses the first booted simulator found.
+        udid: Optional UDID (device identifier) of the simulator to screenshot.
+              If not provided or empty, the first booted simulator found is used.
+              A list of running simulators can be found with `list_booted_simulators`.
 
     Returns:
         The file path to the saved screenshot.
@@ -1503,11 +1520,13 @@ def list_running_mac_apps() -> str:
 @mcp.tool()
 def list_mac_app_windows() -> str:
     """
-    List all visible macOS application windows with their CGWindow IDs.
+    List all on-screen macOS application windows with their CGWindow IDs.
+    These window IDs can be used to capture screenshots of a given window
+    or app with `take_app_screenshot` or `take_window_screenshot`.
 
     Returns:
         A formatted list of windows grouped by application, including window IDs
-        that can be used with the screencapture -l command for taking screenshots.
+        that can be used with `take_window_screenshot`.
     """
     show_notification("Xcode MCP", "Listing macOS application windows")
 
@@ -1620,7 +1639,7 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
                 output_lines.append(f"Window ID {window['id']} - \"{window['title']}\" - App PID {window['pid']} - \"{app_name}\"")
 
         output_lines.append("")
-        output_lines.append("Use with: screencapture -l <window_id> <output_file>")
+        output_lines.append("Use with `take_window_screenshot`.")
 
         return "\n".join(output_lines)
 
@@ -1633,6 +1652,12 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 def take_window_screenshot(window_id_or_name: str) -> str:
     """
     Take a screenshot of a window by ID or name (case-insensitive substring match).
+    Window IDs can be obtained by calling `list_mac_app_windows`, or you can simply
+    pass a partial (or complete) window title, like "News" for the News app.
+    If multiple windows match the provided name, screenshots will be taken for up to
+    the first 5 of them.
+    
+    Note: Only on-screen windows can be found by name.
 
     Args:
         window_id_or_name: Window ID number or partial window title to match.
@@ -1718,7 +1743,10 @@ def take_window_screenshot(window_id_or_name: str) -> str:
 def take_app_screenshot(app_name: str) -> str:
     """
     Take screenshots of all windows for an app (case-insensitive substring match).
+    If the app has more than one window, screenshots will be taken for up to 5 of them.
 
+    Note: Only apps with at least one on-screen window can be found by this tool.
+    
     Args:
         app_name: Full or partial app name to match.
 
