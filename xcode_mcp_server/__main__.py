@@ -1690,9 +1690,9 @@ def take_window_screenshot(window_id_or_name: str) -> str:
             filename = f"window_{window_id}_{safe_app}_{safe_title}_{timestamp}_{unique_id}.png"
             screenshot_path = os.path.join(screenshot_dir, filename)
 
-            # Take the screenshot using screencapture
+            # Take the screenshot using screencapture (-x flag disables sound)
             result = subprocess.run(
-                ['screencapture', '-l', str(window_id), screenshot_path],
+                ['screencapture', '-x', '-l', str(window_id), screenshot_path],
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -1789,9 +1789,9 @@ def take_app_screenshot(app_name: str) -> str:
             filename = f"app_{safe_app}_window_{window['id']}_{safe_title}_{timestamp}_{unique_id}.png"
             screenshot_path = os.path.join(screenshot_dir, filename)
 
-            # Take the screenshot using screencapture
+            # Take the screenshot using screencapture (-x flag disables sound)
             result = subprocess.run(
-                ['screencapture', '-l', str(window['id']), screenshot_path],
+                ['screencapture', '-x', '-l', str(window['id']), screenshot_path],
                 capture_output=True,
                 text=True,
                 timeout=5
