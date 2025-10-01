@@ -2416,6 +2416,20 @@ def run_project_tests(project_path: str,
     if max_wait_seconds < 0:
         raise InvalidParameterError("max_wait_seconds must be >= 0")
 
+    # Handle various forms of empty/invalid tests_to_run parameter
+    # This works around MCP client issues with optional list parameters
+    if tests_to_run is not None:
+        # Handle string inputs that might come from the client
+        if isinstance(tests_to_run, str):
+            tests_to_run = tests_to_run.strip()
+            if not tests_to_run or tests_to_run in ['[]', 'null', 'undefined', '']:
+                tests_to_run = None
+            else:
+                # Try to parse as a comma-separated list
+                tests_to_run = [t.strip() for t in tests_to_run.split(',') if t.strip()]
+        elif not tests_to_run:  # Empty list or other falsy value
+            tests_to_run = None
+
     # Escape for AppleScript
     escaped_path = escape_applescript_string(project_path)
 
