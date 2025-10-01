@@ -16,7 +16,10 @@
       "Bash(git commit:*)",
       "Bash(sdef:*)",
       "Bash(chmod:*)",
-      "Bash(xcrun xcresulttool get:*)"
+      "Bash(xcrun xcresulttool get:*)",
+      "mcp__xcode-mcp-server__build_project",
+      "Bash(python:*)",
+      "Bash(bash:*)"
     ],
     "deny": []
   }
