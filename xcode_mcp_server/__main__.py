@@ -1147,6 +1147,46 @@ def get_runtime_output(project_path: str,
 
     return header + console_output
 
+def _get_booted_simulators():
+    """
+    Internal helper to get list of booted simulators using text parsing.
+    Returns a list of dicts with 'name', 'udid', and 'os' keys.
+    """
+    result = subprocess.run(
+        ['xcrun', 'simctl', 'list', 'devices', 'booted'],
+        capture_output=True,
+        text=True,
+        timeout=10
+    )
+
+    if result.returncode != 0:
+        raise XCodeMCPError(f"Failed to list simulators: {result.stderr}")
+
+    lines = result.stdout.strip().split('\n')
+    booted_simulators = []
+    current_os = None
+
+    for line in lines:
+        line = line.strip()
+        # Check for OS version headers like "-- iOS 26.0 --"
+        if line.startswith('-- ') and line.endswith(' --'):
+            current_os = line[3:-3].strip()
+        # Check for booted device lines
+        elif '(Booted)' in line and current_os:
+            # Parse device info from line like: "iPad (A16) (D89C8520-3426-49B2-9CF5-09DCA506DC66) (Booted)"
+            import re
+            match = re.match(r'(.+?)\s+\(([A-F0-9-]+)\)\s+\(Booted\)', line)
+            if match:
+                device_name = match.group(1).strip()
+                device_udid = match.group(2).strip()
+                booted_simulators.append({
+                    'name': device_name,
+                    'udid': device_udid,
+                    'os': current_os
+                })
+
+    return booted_simulators
+
 @mcp.tool()
 def list_booted_simulators() -> str:
     """
@@ -1159,40 +1199,7 @@ def list_booted_simulators() -> str:
     show_notification("Xcode MCP", "Listing booted simulators")
 
     try:
-        # Run simctl to get list of devices in JSON format
-        result = subprocess.run(
-            ['xcrun', 'simctl', 'list', 'devices', '--json'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        if result.returncode != 0:
-            raise XCodeMCPError(f"Failed to list simulators: {result.stderr}")
-
-        # Parse JSON output
-        devices_data = json.loads(result.stdout)
-        booted_simulators = []
-
-        # Iterate through all device types
-        for runtime, devices in devices_data.get('devices', {}).items():
-            # Extract OS version from runtime string (e.g., "com.apple.CoreSimulator.SimRuntime.iOS-17-0" -> "iOS 17.0")
-            os_version = runtime.replace('com.apple.CoreSimulator.SimRuntime.', '')
-            # Convert dashes to dots for version numbers (iOS-17-0 -> iOS 17.0)
-            parts = os_version.split('-')
-            if len(parts) >= 3:
-                os_version = f"{parts[0]} {parts[1]}.{parts[2]}"
-            else:
-                os_version = os_version.replace('-', ' ')
-
-            for device in devices:
-                if device.get('state') == 'Booted':
-                    booted_simulators.append({
-                        'name': device.get('name', 'Unknown'),
-                        'udid': device.get('udid', 'Unknown'),
-                        'os': os_version,
-                        'device_type': device.get('deviceTypeIdentifier', '').split('.')[-1] if device.get('deviceTypeIdentifier') else 'Unknown'
-                    })
+        booted_simulators = _get_booted_simulators()
 
         if not booted_simulators:
             return "No booted simulators found"
@@ -1204,16 +1211,15 @@ def list_booted_simulators() -> str:
             output_lines.append(f"• {sim['name']}")
             output_lines.append(f"  UDID: {sim['udid']}")
             output_lines.append(f"  OS: {sim['os']}")
-            output_lines.append(f"  Type: {sim['device_type']}")
             output_lines.append("")
 
         return "\n".join(output_lines)
 
-    except json.JSONDecodeError as e:
-        raise XCodeMCPError(f"Failed to parse simulator list: {e}")
     except subprocess.TimeoutExpired:
         raise XCodeMCPError("Timeout while listing simulators")
     except Exception as e:
+        if isinstance(e, XCodeMCPError):
+            raise
         raise XCodeMCPError(f"Error listing simulators: {e}")
 
 @mcp.tool()
@@ -1320,53 +1326,36 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
         The file path to the saved screenshot.
 
     Raises:
-        XCodeMCPError: If no booted simulators found or specified simulator is not booted.
+        XCodeMCPError: If no booted simulators found or screenshot fails.
     """
     show_notification("Xcode MCP", "Taking simulator screenshot")
 
     try:
-        # Get list of booted simulators
-        result = subprocess.run(
-            ['xcrun', 'simctl', 'list', 'devices', '--json'],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        if result.returncode != 0:
-            raise XCodeMCPError(f"Failed to list simulators: {result.stderr}")
-
-        devices_data = json.loads(result.stdout)
-        booted_simulators = []
-
-        # Find all booted simulators
-        for runtime, devices in devices_data.get('devices', {}).items():
-            for device in devices:
-                if device.get('state') == 'Booted':
-                    booted_simulators.append({
-                        'name': device.get('name', 'Unknown'),
-                        'udid': device.get('udid'),
-                    })
-
-        if not booted_simulators:
-            raise XCodeMCPError("No booted simulators found")
-
-        # Determine which simulator to use
         target_udid = None
-        target_name = None
+        target_name = "Unknown"
 
         if udid and udid.strip():
-            # User specified a UDID
-            udid = udid.strip()
-            for sim in booted_simulators:
-                if sim['udid'] == udid:
-                    target_udid = udid
-                    target_name = sim['name']
-                    break
+            # User specified a UDID - use it directly without checking booted list
+            # xcrun simctl will fail appropriately if it's not booted
+            target_udid = udid.strip()
 
-            if not target_udid:
-                raise XCodeMCPError(f"Simulator with UDID '{udid}' is not booted or does not exist")
+            # Try to get the name for better logging (optional)
+            try:
+                booted_simulators = _get_booted_simulators()
+                for sim in booted_simulators:
+                    if sim['udid'] == target_udid:
+                        target_name = sim['name']
+                        break
+            except:
+                # If we can't get the name, continue anyway
+                pass
         else:
+            # No UDID specified - find first booted simulator
+            booted_simulators = _get_booted_simulators()
+
+            if not booted_simulators:
+                raise XCodeMCPError("No booted simulators found")
+
             # Use first booted simulator
             target_udid = booted_simulators[0]['udid']
             target_name = booted_simulators[0]['name']
@@ -1392,7 +1381,14 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
         )
 
         if result.returncode != 0:
-            raise XCodeMCPError(f"Failed to take screenshot: {result.stderr}")
+            error_msg = result.stderr.strip()
+            # Provide more helpful error messages
+            if 'Invalid device' in error_msg:
+                raise XCodeMCPError(f"Simulator with UDID '{target_udid}' does not exist")
+            elif 'not booted' in error_msg.lower():
+                raise XCodeMCPError(f"Simulator with UDID '{target_udid}' is not booted")
+            else:
+                raise XCodeMCPError(f"Failed to take screenshot: {error_msg}")
 
         # Verify the file was created
         if not os.path.exists(screenshot_path):
@@ -1401,8 +1397,6 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
         print(f"Screenshot saved to: {screenshot_path}", file=sys.stderr)
         return screenshot_path
 
-    except json.JSONDecodeError as e:
-        raise XCodeMCPError(f"Failed to parse simulator list: {e}")
     except subprocess.TimeoutExpired:
         raise XCodeMCPError("Timeout while taking screenshot")
     except Exception as e:
