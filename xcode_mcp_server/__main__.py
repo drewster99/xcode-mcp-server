@@ -6,6 +6,7 @@ import json
 import argparse
 import time
 import re
+from datetime import datetime
 from typing import Optional, Dict, List, Any, Tuple, Set
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -1629,6 +1630,279 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
         if isinstance(e, XCodeMCPError):
             raise
         raise XCodeMCPError(f"Error listing windows: {e}")
+
+@mcp.tool()
+def take_window_screenshot(window_id_or_name: str) -> str:
+    """
+    Take a screenshot of a window by ID or name (case-insensitive substring match).
+
+    Args:
+        window_id_or_name: Window ID number or partial window title to match.
+
+    Returns:
+        Path(s) to saved screenshot file(s), one per line if multiple matches.
+
+    Raises:
+        XCodeMCPError: If no matching windows found or screenshot fails.
+    """
+    show_notification("Xcode MCP", f"Taking screenshot of window: {window_id_or_name}")
+
+    try:
+        # First, get all windows
+        windows_data = _get_all_windows()
+
+        matches = []
+
+        # Try to interpret as window ID first
+        try:
+            target_id = int(window_id_or_name)
+            for app_name, windows in windows_data.items():
+                for window in windows:
+                    if window['id'] == target_id:
+                        matches.append((window['id'], window['title'], app_name))
+                        break
+                if matches:
+                    break
+        except ValueError:
+            # Not a number, search by title substring (case-insensitive)
+            search_term = window_id_or_name.lower()
+            for app_name, windows in windows_data.items():
+                for window in windows:
+                    if search_term in window['title'].lower():
+                        matches.append((window['id'], window['title'], app_name))
+
+        if not matches:
+            raise XCodeMCPError(f"No windows found matching '{window_id_or_name}'")
+
+        # Take screenshots
+        screenshot_paths = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for window_id, window_title, app_name in matches:
+            # Sanitize window title for filename
+            safe_title = "".join(c for c in window_title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
+            safe_app = "".join(c for c in app_name if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
+
+            filename = f"window_{window_id}_{safe_app}_{safe_title}_{timestamp}.png"
+            screenshot_path = os.path.join(tempfile.gettempdir(), filename)
+
+            # Take the screenshot using screencapture
+            result = subprocess.run(
+                ['screencapture', '-l', str(window_id), screenshot_path],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                raise XCodeMCPError(f"Failed to capture window {window_id}: {result.stderr}")
+
+            # Verify file was created
+            if not os.path.exists(screenshot_path):
+                raise XCodeMCPError(f"Screenshot file was not created for window {window_id}")
+
+            screenshot_paths.append(screenshot_path)
+
+        return "\n".join(screenshot_paths)
+
+    except Exception as e:
+        if isinstance(e, XCodeMCPError):
+            raise
+        raise XCodeMCPError(f"Error taking window screenshot: {e}")
+
+@mcp.tool()
+def take_app_screenshot(app_name: str) -> str:
+    """
+    Take screenshots of all windows for an app (case-insensitive substring match).
+
+    Args:
+        app_name: Full or partial app name to match.
+
+    Returns:
+        Path(s) to saved screenshot file(s), one per line (max 5 windows).
+        If multiple apps match, returns an error with the full window list.
+
+    Raises:
+        XCodeMCPError: If no matching app found, multiple apps match, or screenshot fails.
+    """
+    show_notification("Xcode MCP", f"Taking screenshots for app: {app_name}")
+
+    try:
+        # Get all windows
+        windows_data = _get_all_windows()
+
+        # Find matching apps (case-insensitive substring match)
+        search_term = app_name.lower()
+        matching_apps = {}
+
+        for app, windows in windows_data.items():
+            if search_term in app.lower():
+                matching_apps[app] = windows
+
+        if not matching_apps:
+            raise XCodeMCPError(f"No apps found matching '{app_name}'")
+
+        # If multiple apps match, return error with window list
+        if len(matching_apps) > 1:
+            output_lines = [f"Multiple apps match '{app_name}'. Please be more specific:"]
+            output_lines.append("")
+
+            total_windows = sum(len(windows) for windows in matching_apps.values())
+            output_lines.append(f"Found {total_windows} window(s) across {len(matching_apps)} matching application(s):")
+            output_lines.append("")
+
+            for app, windows in sorted(matching_apps.items()):
+                for window in windows:
+                    output_lines.append(f"Window ID {window['id']} - \"{window['title']}\" - App PID {window['pid']} - \"{app}\"")
+
+            raise XCodeMCPError("\n".join(output_lines))
+
+        # Single app matched - take screenshots of all its windows (max 5)
+        app_matched = list(matching_apps.keys())[0]
+        windows = matching_apps[app_matched]
+
+        if not windows:
+            raise XCodeMCPError(f"App '{app_matched}' has no visible windows")
+
+        # Limit to 5 windows
+        windows = windows[:5]
+
+        # Take screenshots
+        screenshot_paths = []
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for window in windows:
+            # Sanitize names for filename
+            safe_title = "".join(c for c in window['title'] if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
+            safe_app = "".join(c for c in app_matched if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
+
+            filename = f"app_{safe_app}_window_{window['id']}_{safe_title}_{timestamp}.png"
+            screenshot_path = os.path.join(tempfile.gettempdir(), filename)
+
+            # Take the screenshot using screencapture
+            result = subprocess.run(
+                ['screencapture', '-l', str(window['id']), screenshot_path],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+
+            if result.returncode != 0:
+                raise XCodeMCPError(f"Failed to capture window {window['id']}: {result.stderr}")
+
+            # Verify file was created
+            if not os.path.exists(screenshot_path):
+                raise XCodeMCPError(f"Screenshot file was not created for window {window['id']}")
+
+            screenshot_paths.append(screenshot_path)
+
+        return "\n".join(screenshot_paths)
+
+    except Exception as e:
+        if isinstance(e, XCodeMCPError):
+            raise
+        raise XCodeMCPError(f"Error taking app screenshot: {e}")
+
+def _get_all_windows():
+    """
+    Internal helper to get all windows grouped by app.
+    Returns a dict of {app_name: [window_info, ...]}
+    """
+    # Use Swift to get window information via CoreGraphics
+    swift_code = '''
+import Cocoa
+import CoreGraphics
+
+// Get all on-screen windows
+let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+    print("ERROR: Failed to get window list")
+    exit(1)
+}
+
+// Group windows by app and filter out system UI elements
+var appWindows: [String: [(id: Int, title: String, pid: Int)]] = [:]
+
+for window in windowList {
+    let windowID = window[kCGWindowNumber as String] as? Int ?? 0
+    let appName = window[kCGWindowOwnerName as String] as? String ?? "Unknown"
+    let windowTitle = window[kCGWindowName as String] as? String ?? ""
+    let windowLayer = window[kCGWindowLayer as String] as? Int ?? 0
+    let ownerPID = window[kCGWindowOwnerPID as String] as? Int ?? 0
+
+    // Skip menu bar items and system UI (layer 0 is normal windows)
+    // Also skip windows without titles
+    if windowLayer == 0 && !windowTitle.isEmpty {
+        if appWindows[appName] == nil {
+            appWindows[appName] = []
+        }
+        appWindows[appName]?.append((id: windowID, title: windowTitle, pid: ownerPID))
+    }
+}
+
+// Output as structured format for parsing
+for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
+    print("APP:\\(app)")
+    for window in windows {
+        print("WINDOW:\\(window.id)\\t\\(window.pid)\\t\\(window.title)")
+    }
+}
+'''
+
+    # Write Swift code to temporary file and execute
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.swift', delete=False) as f:
+        f.write(swift_code)
+        temp_file = f.name
+
+    try:
+        # Run Swift code
+        result = subprocess.run(
+            ['swift', temp_file],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode != 0:
+            raise XCodeMCPError(f"Failed to get window list: {result.stderr}")
+
+        output = result.stdout
+
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(temp_file)
+        except:
+            pass
+
+    # Check for error
+    if output.startswith("ERROR:"):
+        raise XCodeMCPError(output.replace("ERROR: ", ""))
+
+    # Parse the output
+    apps_with_windows = {}
+    current_app = None
+
+    for line in output.strip().split('\n'):
+        if line.startswith('APP:'):
+            current_app = line[4:]
+            apps_with_windows[current_app] = []
+        elif line.startswith('WINDOW:') and current_app:
+            parts = line[7:].split('\t', 2)
+            if len(parts) >= 3:
+                window_id = int(parts[0])
+                pid = parts[1]
+                title = parts[2]
+                apps_with_windows[current_app].append({
+                    'id': window_id,
+                    'pid': pid,
+                    'title': title
+                })
+
+    return apps_with_windows
 
 # Main entry point for the server
 if __name__ == "__main__":
