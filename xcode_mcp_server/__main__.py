@@ -153,15 +153,16 @@ def validate_and_normalize_project_path(project_path: str, function_name: str) -
     if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
         raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
 
-    # Show notification
-    show_notification("Xcode MCP", f"{function_name} {os.path.basename(project_path)}")
-
     # Security check
     if not is_path_allowed(project_path):
+        error_msg = f"Access denied: {os.path.basename(project_path)}"
+        show_error_notification(error_msg)
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
     # Check if the path exists
     if not os.path.exists(project_path):
+        error_msg = f"Path not found: {os.path.basename(project_path)}"
+        show_error_notification(error_msg)
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
 
     # Normalize the path to resolve symlinks
@@ -286,9 +287,9 @@ def extract_console_logs_from_xcresult(xcresult_path: str,
                 else:
                     console_lines.append(content)
 
-        # Limit to max_lines (take the last N lines)
+        # Limit to max_lines (take the first N lines)
         if len(console_lines) > max_lines:
-            console_lines = console_lines[-max_lines:]
+            console_lines = console_lines[:max_lines]
 
         if not console_lines:
             return True, ""  # No output is not an error
@@ -413,15 +414,91 @@ def find_xcresult_for_project(project_path: str) -> Optional[str]:
 
     return None
 
-def show_notification(title: str, message: str):
-    """Show a macOS notification if notifications are enabled"""
+def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int) -> Optional[str]:
+    """
+    Wait for an xcresult file that was created AND modified at or after the given timestamp.
+
+    This ensures we don't accidentally get results from a previous run by only
+    accepting xcresult files where BOTH the creation time and modification time
+    are at or after our operation started.
+
+    Args:
+        project_path: Path to the .xcodeproj or .xcworkspace
+        start_timestamp: Unix timestamp (from time.time()) when the operation started
+        timeout_seconds: Maximum seconds to wait for a valid xcresult file
+
+    Returns:
+        Path to the xcresult file if found, or None if timeout expires or no valid file found
+    """
+    import datetime
+
+    start_datetime = datetime.datetime.fromtimestamp(start_timestamp)
+    print(f"Waiting for xcresult modified at or after: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}", file=sys.stderr)
+
+    end_time = time.time() + timeout_seconds
+
+    while time.time() < end_time:
+        # Try to find an xcresult file
+        xcresult_path = find_xcresult_for_project(project_path)
+
+        if xcresult_path and os.path.exists(xcresult_path):
+            mod_time = os.path.getmtime(xcresult_path)
+            create_time = os.path.getctime(xcresult_path)
+
+            mod_datetime = datetime.datetime.fromtimestamp(mod_time)
+            create_datetime = datetime.datetime.fromtimestamp(create_time)
+
+            print(f"Found xcresult - created: {create_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}, modified: {mod_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')} ({xcresult_path})", file=sys.stderr)
+
+            # Check if BOTH creation time AND modification time are at or after our start time
+            if create_time >= start_timestamp and mod_time >= start_timestamp:
+                print(f"xcresult creation and modification times are both newer than start time - accepting it", file=sys.stderr)
+                return xcresult_path
+            else:
+                if create_time < start_timestamp:
+                    time_diff = start_timestamp - create_time
+                    print(f"xcresult creation time is {time_diff:.2f} seconds older than start time - waiting for newer file...", file=sys.stderr)
+                if mod_time < start_timestamp:
+                    time_diff = start_timestamp - mod_time
+                    print(f"xcresult modification time is {time_diff:.2f} seconds older than start time - waiting for newer file...", file=sys.stderr)
+        else:
+            print(f"No xcresult file found yet - waiting...", file=sys.stderr)
+
+        # Wait a bit before checking again
+        time.sleep(1)
+
+    print(f"Timeout expired ({timeout_seconds}s) waiting for xcresult file", file=sys.stderr)
+    return None
+
+def show_notification(title: str, message: str, subtitle: str = None, sound: bool = False):
+    """Show a macOS notification if notifications are enabled
+
+    Args:
+        title: Notification title
+        message: Notification message body
+        subtitle: Optional subtitle (shown below title)
+        sound: Whether to play a sound (for errors/important events)
+    """
     if NOTIFICATIONS_ENABLED:
         try:
-            subprocess.run(['osascript', '-e', 
-                          f'display notification "{message}" with title "{title}"'], 
-                          capture_output=True)
+            # Build AppleScript command
+            script = f'display notification "{message}" with title "{title}"'
+            if subtitle:
+                script += f' subtitle "{subtitle}"'
+            if sound:
+                script += ' sound name "Frog"'
+
+            subprocess.run(['osascript', '-e', script], capture_output=True)
         except:
             pass  # Ignore notification errors
+
+def show_error_notification(message: str, details: str = None):
+    """Show an error notification with sound"""
+    show_notification("Xcode MCP", message, subtitle=details, sound=True)
+
+def show_result_notification(message: str, details: str = None):
+    """Show a result notification"""
+    show_notification("Xcode MCP", message, subtitle=details)
 
 # MCP Tools for Xcode
 
@@ -429,12 +506,13 @@ def show_notification(title: str, message: str):
 def version() -> str:
     """
     Get the current version of the Xcode MCP Server.
-    
+
     Returns:
         The version string of the server
     """
-    show_notification("Xcode MCP", "Getting server version")
-    return f"Xcode MCP Server version {__import__('xcode_mcp_server').__version__}"
+    ver = __import__('xcode_mcp_server').__version__
+    show_result_notification(f"XcodeMCP v{ver}")
+    return f"Xcode MCP Server version {ver}"
 
 
 @mcp.tool()
@@ -459,33 +537,35 @@ def get_xcode_projects(search_path: str = "") -> str:
     
     # Determine paths to search
     paths_to_search = []
-    
+
     if not search_path or search_path.strip() == "":
         # Search all allowed folders
-        show_notification("Xcode MCP", f"Searching all {len(ALLOWED_FOLDERS)} allowed folders for Xcode projects")
         paths_to_search = list(ALLOWED_FOLDERS)
     else:
         # Search specific path
         project_path = search_path.strip()
-        
+
         # Security check
         if not is_path_allowed(project_path):
+            error_msg = f"Access denied: {project_path}"
+            show_error_notification(error_msg)
             raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-        
+
         # Check if the path exists
         if not os.path.exists(project_path):
+            error_msg = f"Path not found: {project_path}"
+            show_error_notification(error_msg)
             raise InvalidParameterError(f"Project path does not exist: {project_path}")
-            
-        show_notification("Xcode MCP", f"Searching {project_path} for Xcode projects")
+
         paths_to_search = [project_path]
-    
+
     # Search for projects in all paths
     all_results = []
     for path in paths_to_search:
         try:
             # Use mdfind to search for Xcode projects
-            mdfindResult = subprocess.run(['mdfind', '-onlyin', path, 
-                                         'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'], 
+            mdfindResult = subprocess.run(['mdfind', '-onlyin', path,
+                                         'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'],
                                          capture_output=True, text=True, check=True)
             result = mdfindResult.stdout.strip()
             if result:
@@ -493,9 +573,22 @@ def get_xcode_projects(search_path: str = "") -> str:
         except Exception as e:
             print(f"Warning: Error searching in {path}: {str(e)}", file=sys.stderr)
             continue
-    
+
     # Remove duplicates and sort
     unique_results = sorted(set(all_results))
+
+    # Show result notification
+    if unique_results:
+        count = len(unique_results)
+        # Get first 3 project names for notification
+        sample_names = [os.path.basename(p) for p in unique_results[:3]]
+        if count <= 3:
+            details = "\n".join(f"• {name}" for name in sample_names)
+        else:
+            details = "\n".join(f"• {name}" for name in sample_names) + f"\n• +{count - 3} more"
+        show_result_notification(f"Found {count} project{'s' if count != 1 else ''}", details)
+    else:
+        show_result_notification("No projects found")
 
     result = '\n'.join(unique_results) if unique_results else ""
     if result:
@@ -545,10 +638,14 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
 
     # Security check
     if not is_path_allowed(directory_path):
+        error_msg = f"Access denied: {directory_path}"
+        show_error_notification(error_msg)
         raise AccessDeniedError(f"Access to path '{directory_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
     # Check if path exists
     if not os.path.exists(directory_path):
+        error_msg = f"Path not found: {directory_path}"
+        show_error_notification(error_msg)
         raise InvalidParameterError(f"Path does not exist: {directory_path}")
 
     # Normalize the path
@@ -557,14 +654,14 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     # Determine which directory to scan
     # If path ends with .xcodeproj or .xcworkspace, scan the parent directory
     if directory_path.endswith('.xcodeproj') or directory_path.endswith('.xcworkspace'):
-        show_notification("Xcode MCP", f"Getting directory tree for parent of {os.path.basename(directory_path)}")
         scan_dir = os.path.dirname(directory_path)
     else:
-        show_notification("Xcode MCP", f"Getting directory tree for {os.path.basename(directory_path)}")
         scan_dir = directory_path
 
     # Verify scan_dir is a directory
     if not os.path.isdir(scan_dir):
+        error_msg = f"Not a directory: {scan_dir}"
+        show_error_notification(error_msg)
         raise InvalidParameterError(f"Path is not a directory: {scan_dir}")
 
     # Build the hierarchy (directories only)
@@ -683,18 +780,22 @@ def get_directory_listing(directory_path: str,
 
     # Security check
     if not is_path_allowed(directory_path):
+        error_msg = f"Access denied: {directory_path}"
+        show_error_notification(error_msg)
         raise AccessDeniedError(f"Access to path '{directory_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
     # Normalize and check path
     directory_path = os.path.realpath(directory_path)
 
     if not os.path.exists(directory_path):
+        error_msg = f"Path not found: {directory_path}"
+        show_error_notification(error_msg)
         raise InvalidParameterError(f"Path does not exist: {directory_path}")
 
     if not os.path.isdir(directory_path):
+        error_msg = f"Not a directory: {directory_path}"
+        show_error_notification(error_msg)
         raise InvalidParameterError(f"Path is not a directory: {directory_path}")
-
-    show_notification("Xcode MCP", f"Listing contents of {os.path.basename(directory_path)}")
 
     # Helper function to format file size
     def format_size(size_bytes: int) -> str:
@@ -881,6 +982,11 @@ def build_project(project_path: str,
     normalized_path = validate_and_normalize_project_path(project_path, f"Building {scheme_desc} in")
     escaped_path = escape_applescript_string(normalized_path)
 
+    # Show building notification
+    project_name = os.path.basename(normalized_path)
+    scheme_name = scheme if scheme else "active scheme"
+    show_notification("Xcode MCP", f"Building {project_name}", subtitle=scheme_name)
+
     # Build the AppleScript
     if scheme:
         # Use provided scheme
@@ -972,11 +1078,17 @@ end tell
 
     if success:
         if output == "Build succeeded.":
+            show_result_notification(f"Build succeeded", project_name)
             return "Build succeeded with 0 errors.\n\nUse `run_project` to launch the app, or `run_project_tests` to run tests."
         else:
             # Use the shared helper to extract and format errors/warnings
-            return extract_build_errors_and_warnings(output, include_warnings)
+            errors_output = extract_build_errors_and_warnings(output, include_warnings)
+            # Count errors for notification
+            error_count = errors_output.count("error:")
+            show_error_notification(f"Build failed", f"{error_count} error{'s' if error_count != 1 else ''}")
+            return errors_output
     else:
+        show_error_notification("Build failed to start")
         raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")
 
 @mcp.tool()
@@ -986,7 +1098,7 @@ def run_project(project_path: str,
                max_lines: int = 100,
                regex_filter: Optional[str] = None) -> str:
     """
-    Run the specified Xcode project or workspace and wait for completion.
+    Run the specified Xcode project or workspace and WAIT for completion.
     If the project run has completed by the time `wait_seconds` have passed,
     this function will return filtered runtime output.
     
@@ -1015,6 +1127,11 @@ def run_project(project_path: str,
     normalized_path = validate_and_normalize_project_path(project_path, f"Running {scheme_desc} in")
     escaped_path = escape_applescript_string(normalized_path)
 
+    # Show running notification
+    project_name = os.path.basename(normalized_path)
+    scheme_name = scheme if scheme else "active scheme"
+    show_notification("Xcode MCP", f"Running {project_name}", subtitle=scheme_name)
+
     # Build the AppleScript that runs and polls in one script
     if scheme:
         escaped_scheme = escape_applescript_string(scheme)
@@ -1041,20 +1158,16 @@ def run_project(project_path: str,
             -- Run
             set actionResult to run workspaceDoc
 
-            -- Poll for completion
+            -- Wait for completion
             repeat {wait_seconds} times
-                if completed of actionResult is true then
-                    exit repeat
+                if completed of actionresult is true then
+                    return "done|" & (status of actionResult as text)
                 end if
                 delay 1
             end repeat
 
-            -- Return completion status and status
-            if completed of actionResult is true then
-                return "true|" & (status of actionResult as text)
-            else
-                return "false|" & (status of actionResult as text)
-            end if
+            -- Final return
+            return "FAIL|" & (actionResult as text)
         end tell
         '''
     else:
@@ -1078,24 +1191,27 @@ def run_project(project_path: str,
             -- Run with active scheme
             set actionResult to run workspaceDoc
 
-            -- Poll for completion
+            -- Wait for completion
             repeat {wait_seconds} times
-                if completed of actionResult is true then
-                    exit repeat
+                if completed of actionresult is true then
+                    return "done|" & (status of actionResult as text)
                 end if
                 delay 1
             end repeat
 
-            -- Return completion status and status
-            if completed of actionResult is true then
-                return "true|" & (status of actionResult as text)
-            else
-                return "false|" & (status of actionResult as text)
-            end if
+            -- Final return
+            return "FAIL|" & (actionResult as text)
         end tell
         '''
 
     print(f"Running and waiting up to {wait_seconds} seconds for completion...", file=sys.stderr)
+    import datetime
+
+    # Capture start time BEFORE running the script
+    start_time = time.time()
+    start_datetime = datetime.datetime.fromtimestamp(start_time)
+    print(f"Run start time: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}", file=sys.stderr)
+
     success, output = run_applescript(script)
 
     if not success:
@@ -1113,25 +1229,33 @@ def run_project(project_path: str,
 
     print(f"Run completed={completed}, status={final_status}", file=sys.stderr)
 
-    # Find the most recent xcresult file for this project
-    xcresult_path = find_xcresult_for_project(project_path)
+    # Wait for an xcresult file that was modified at or after our start time
+    # This prevents us from accidentally using results from a previous run
+    # We'll wait up to 10 seconds for the xcresult file to appear/update
+    xcresult_timeout = wait_seconds + 1
+    xcresult_path = wait_for_xcresult_after_timestamp(normalized_path, start_time, xcresult_timeout)
 
     if not xcresult_path:
         if completed:
-            return f"Run completed with status: {final_status}. Could not find xcresult file to extract console logs."
+            return f"Run completed with status: {final_status}. Could not find xcresult file (modified after start time) to extract console logs."
         else:
             return f"Run did not complete within {wait_seconds} seconds (status: {final_status}). Could not extract console logs."
 
-    print(f"Found xcresult: {xcresult_path}", file=sys.stderr)
+    print(f"Using xcresult: {xcresult_path}", file=sys.stderr)
 
     # Extract console logs
     success, console_output = extract_console_logs_from_xcresult(xcresult_path, max_lines, regex_filter)
 
     if not success:
+        show_error_notification(f"Run failed: {final_status}")
         return f"Run completed with status: {final_status}. {console_output}"
 
     if not console_output:
+        show_result_notification(f"Run completed: {final_status}")
         return f"Run completed with status: {final_status}. No console output found (or filtered out)."
+
+    # Show result notification
+    show_result_notification(f"Run completed: {final_status}")
 
     output_summary = f"Run completed with status: {final_status}\n"
     output_summary += f"Console output ({len(console_output.splitlines())} lines):\n"
@@ -1398,13 +1522,23 @@ def list_booted_simulators() -> str:
         A formatted list of booted simulators with their names, UDIDs, and OS versions.
         Returns "No booted simulators found" if none are running.
     """
-    show_notification("Xcode MCP", "Listing booted simulators")
-
     try:
         booted_simulators = _get_booted_simulators()
 
         if not booted_simulators:
+            show_result_notification("No booted simulators")
             return "No booted simulators found"
+
+        # Show notification with simulator summary
+        count = len(booted_simulators)
+        first_sim = booted_simulators[0]['name']
+        if count == 1:
+            show_result_notification(f"Found {first_sim}")
+        else:
+            details = f"{first_sim}"
+            if count > 1:
+                details += f"\n+{count - 1} more"
+            show_result_notification(f"Found {count} simulators", details)
 
         # Format output
         output_lines = [f"Found {len(booted_simulators)} booted simulator(s):", ""]
@@ -1418,10 +1552,14 @@ def list_booted_simulators() -> str:
         return "\n".join(output_lines)
 
     except subprocess.TimeoutExpired:
+        error_msg = "Timeout listing simulators"
+        show_error_notification(error_msg)
         raise XCodeMCPError("Timeout while listing simulators")
     except Exception as e:
         if isinstance(e, XCodeMCPError):
             raise
+        error_msg = "Error listing simulators"
+        show_error_notification(error_msg, str(e))
         raise XCodeMCPError(f"Error listing simulators: {e}")
 
 @mcp.tool()
@@ -1503,16 +1641,25 @@ def take_xcode_screenshot(project_path: str) -> str:
 
         # Verify the file was created
         if not os.path.exists(screenshot_path):
+            error_msg = "Screenshot failed"
+            show_error_notification(error_msg, "File not created")
             raise XCodeMCPError("Screenshot file was not created")
 
         print(f"Screenshot saved to: {screenshot_path}", file=sys.stderr)
+        show_result_notification(f"SCREENSHOT - Xcode ({workspace_name})")
         return screenshot_path
 
     except subprocess.TimeoutExpired:
+        error_msg = "Screenshot timeout"
+        show_error_notification(error_msg)
         raise XCodeMCPError("Timeout while taking screenshot")
     except Exception as e:
         if isinstance(e, XCodeMCPError):
+            if "not found" not in str(e).lower():
+                show_error_notification("Screenshot failed", str(e))
             raise
+        error_msg = "Screenshot failed"
+        show_error_notification(error_msg, str(e))
         raise XCodeMCPError(f"Error taking Xcode screenshot: {e}")
 
 @mcp.tool()
@@ -1531,8 +1678,6 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
     Raises:
         XCodeMCPError: If no booted simulators found or screenshot fails.
     """
-    show_notification("Xcode MCP", "Taking simulator screenshot")
-
     try:
         target_udid = None
         target_name = "Unknown"
@@ -1557,6 +1702,8 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
             booted_simulators = _get_booted_simulators()
 
             if not booted_simulators:
+                error_msg = "No booted simulators"
+                show_error_notification(error_msg)
                 raise XCodeMCPError("No booted simulators found")
 
             # Use first booted simulator
@@ -1595,16 +1742,25 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
 
         # Verify the file was created
         if not os.path.exists(screenshot_path):
+            error_msg = "Screenshot failed"
+            show_error_notification(error_msg, "File not created")
             raise XCodeMCPError("Screenshot file was not created")
 
         print(f"Screenshot saved to: {screenshot_path}", file=sys.stderr)
+        show_result_notification(f"SCREENSHOT - Simulator")
         return screenshot_path
 
     except subprocess.TimeoutExpired:
+        error_msg = "Screenshot timeout"
+        show_error_notification(error_msg)
         raise XCodeMCPError("Timeout while taking screenshot")
     except Exception as e:
         if isinstance(e, XCodeMCPError):
+            if "not found" not in str(e).lower() and "No booted" not in str(e):
+                show_error_notification("Screenshot failed", str(e))
             raise
+        error_msg = "Screenshot failed"
+        show_error_notification(error_msg, str(e))
         raise XCodeMCPError(f"Error taking screenshot: {e}")
 
 @mcp.tool()
@@ -1854,8 +2010,6 @@ def take_window_screenshot(window_id_or_name: str) -> str:
     Raises:
         XCodeMCPError: If no matching windows found or screenshot fails.
     """
-    show_notification("Xcode MCP", f"Taking screenshot of window: {window_id_or_name}")
-
     try:
         # First, get all windows
         windows_data = _get_all_windows()
@@ -1881,6 +2035,8 @@ def take_window_screenshot(window_id_or_name: str) -> str:
                         matches.append((window['id'], window['title'], app_name))
 
         if not matches:
+            error_msg = f"Window not found: {window_id_or_name}"
+            show_error_notification(error_msg)
             raise XCodeMCPError(f"No windows found matching '{window_id_or_name}'")
 
         # Take screenshots
@@ -1914,15 +2070,28 @@ def take_window_screenshot(window_id_or_name: str) -> str:
 
             # Verify file was created
             if not os.path.exists(screenshot_path):
+                error_msg = "Screenshot failed"
+                show_error_notification(error_msg, f"Window {window_id}")
                 raise XCodeMCPError(f"Screenshot file was not created for window {window_id}")
 
             screenshot_paths.append(screenshot_path)
+
+        # Show success notification
+        if len(matches) == 1:
+            window_title = matches[0][1]
+            show_result_notification(f"SCREENSHOT - {window_title}")
+        else:
+            show_result_notification(f"SCREENSHOT - {len(matches)} windows")
 
         return "\n".join(screenshot_paths)
 
     except Exception as e:
         if isinstance(e, XCodeMCPError):
+            if "not found" not in str(e).lower():
+                show_error_notification("Screenshot failed", str(e))
             raise
+        error_msg = "Screenshot failed"
+        show_error_notification(error_msg, str(e))
         raise XCodeMCPError(f"Error taking window screenshot: {e}")
 
 @mcp.tool()
@@ -1943,8 +2112,6 @@ def take_app_screenshot(app_name: str) -> str:
     Raises:
         XCodeMCPError: If no matching app found, multiple apps match, or screenshot fails.
     """
-    show_notification("Xcode MCP", f"Taking screenshots for app: {app_name}")
-
     try:
         # Get all windows
         windows_data = _get_all_windows()
@@ -1958,6 +2125,8 @@ def take_app_screenshot(app_name: str) -> str:
                 matching_apps[app] = windows
 
         if not matching_apps:
+            error_msg = f"App not found: {app_name}"
+            show_error_notification(error_msg)
             raise XCodeMCPError(f"No apps found matching '{app_name}'")
 
         # If multiple apps match, return error with window list
@@ -2016,15 +2185,24 @@ def take_app_screenshot(app_name: str) -> str:
 
             # Verify file was created
             if not os.path.exists(screenshot_path):
+                error_msg = "Screenshot failed"
+                show_error_notification(error_msg, f"Window {window['id']}")
                 raise XCodeMCPError(f"Screenshot file was not created for window {window['id']}")
 
             screenshot_paths.append(screenshot_path)
+
+        # Show success notification
+        show_result_notification(f"SCREENSHOT - {app_matched}")
 
         return "\n".join(screenshot_paths)
 
     except Exception as e:
         if isinstance(e, XCodeMCPError):
+            if "not found" not in str(e).lower() and "Multiple apps" not in str(e):
+                show_error_notification("Screenshot failed", str(e))
             raise
+        error_msg = "Screenshot failed"
+        show_error_notification(error_msg, str(e))
         raise XCodeMCPError(f"Error taking app screenshot: {e}")
 
 def _get_all_windows():
@@ -2206,8 +2384,6 @@ def list_project_tests(project_path: str) -> str:
         A list of all test identifiers in the format:
         BundleName/ClassName/testMethodName
     """
-    show_notification("Xcode MCP", f"Listing tests for {os.path.basename(project_path)}")
-
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "list_project_tests")
 
@@ -2290,10 +2466,11 @@ def run_project_tests(project_path: str,
     Returns:
         Test results if max_wait_seconds > 0, otherwise confirmation message
     """
-    show_notification("Xcode MCP", f"Running tests for {os.path.basename(project_path)}")
-
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
+
+    # Show starting notification for long-running operation
+    show_notification("Xcode MCP", f"Running tests", subtitle=os.path.basename(project_path))
 
     # Validate wait time
     if max_wait_seconds < 0:
@@ -2480,6 +2657,7 @@ end tell
     if not completed:
         output_lines.append(f"⏳ Tests did not complete within {max_wait_seconds} seconds")
         output_lines.append(f"Status: {status}")
+        show_result_notification(f"Tests timeout ({max_wait_seconds}s)")
         return '\n'.join(output_lines)
 
     # If tests completed, get detailed results from xcresult
@@ -2500,6 +2678,24 @@ end tell
             )
 
             if result.returncode == 0:
+                # Parse to show notification
+                import json
+                try:
+                    test_data = json.loads(result.stdout)
+                    # Count failures
+                    failure_count = 0
+                    if 'tests' in test_data and '_values' in test_data['tests']:
+                        for test in test_data['tests']['_values']:
+                            if test.get('testStatus', '') == 'Failure':
+                                failure_count += 1
+
+                    if failure_count == 0:
+                        show_result_notification("All tests PASSED")
+                    else:
+                        show_error_notification(f"{failure_count} test{'s' if failure_count != 1 else ''} FAILED")
+                except:
+                    pass
+
                 # Return the raw JSON - let the LLM parse it
                 return result.stdout
             else:
@@ -2511,10 +2707,13 @@ end tell
     print(f"DEBUG: No xcresult bundle found for {project_path}", file=sys.stderr)
 
     if status == "succeeded":
+        show_result_notification("All tests PASSED")
         return "✅ All tests passed"
     elif status == "failed":
+        show_error_notification("Tests FAILED")
         return "❌ Tests failed\n\nNo detailed test results available - xcresult bundle not found"
     else:
+        show_result_notification(f"Tests: {status}")
         return f"Test run status: {status}"
 
 @mcp.tool()
@@ -2528,8 +2727,6 @@ def get_latest_test_results(project_path: str) -> str:
     Returns:
         Latest test results or "No test results available"
     """
-    show_notification("Xcode MCP", f"Getting test results for {os.path.basename(project_path)}")
-
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "get_latest_test_results")
 
@@ -2556,17 +2753,25 @@ def get_latest_test_results(project_path: str) -> str:
                     output_lines = ["Test Results from xcresult bundle:", ""]
 
                     # Try to extract metrics
+                    failed_count = 0
                     if 'metrics' in data:
                         metrics = data['metrics']
                         if 'testsCount' in metrics:
                             output_lines.append(f"Total tests: {metrics.get('testsCount', {}).get('_value', 'N/A')}")
                         if 'testsFailedCount' in metrics:
-                            output_lines.append(f"Failed tests: {metrics.get('testsFailedCount', {}).get('_value', 0)}")
+                            failed_count = metrics.get('testsFailedCount', {}).get('_value', 0)
+                            output_lines.append(f"Failed tests: {failed_count}")
 
                     # Get modification time of xcresult
                     import datetime
                     mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(xcresult_path))
                     output_lines.append(f"Test run: {mod_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+                    # Show notification
+                    if failed_count == 0:
+                        show_result_notification("All tests PASSED")
+                    else:
+                        show_error_notification(f"{failed_count} test{'s' if failed_count != 1 else ''} FAILED")
 
                     return '\n'.join(output_lines)
                 except:
@@ -2618,8 +2823,16 @@ end tell
     success, output = run_applescript(script)
 
     if success:
+        # Parse output to show notification
+        if "No test results available" in output:
+            show_result_notification("No test results")
+        elif "succeeded" in output.lower():
+            show_result_notification("All tests PASSED")
+        elif "failed" in output.lower():
+            show_error_notification("Tests FAILED")
         return output
     else:
+        show_result_notification("No test results")
         return "No test results available"
 
 # Main entry point for the server
