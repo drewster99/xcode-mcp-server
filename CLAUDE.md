@@ -10,7 +10,10 @@ This is the Xcode MCP Server - a Model Context Protocol (MCP) server that enable
 
 ### Local Development
 ```bash
-# Test the server locally with MCP Inspector
+# Quick start with dev script (sets up conda env and runs MCP Inspector)
+./dev.sh
+
+# Manual setup: Test the server locally with MCP Inspector
 export XCODEMCP_ALLOWED_FOLDERS=/Users/username/Projects
 mcp dev xcode_mcp_server/__main__.py
 
@@ -18,10 +21,29 @@ mcp dev xcode_mcp_server/__main__.py
 python -m xcode_mcp_server
 ```
 
+### Testing
+```bash
+# Run tests using the test runner framework
+python tests/test_basic.py      # Basic functionality tests
+python tests/test_build.py      # Build operation tests
+python tests/test_runner.py     # Test infrastructure
+
+# Tests automatically:
+# - Set up isolated working directory (test_projects/working/)
+# - Copy template projects from test_projects/templates/
+# - Configure ALLOWED_FOLDERS to working directory
+# - Clean up after execution
+```
+
 ### Build and Deploy
 ```bash
 # Deploy to PyPI (increments version, builds, and uploads)
 ./deploy.sh
+
+# Manual version increment
+hatch version patch  # 1.2.0 -> 1.2.1
+hatch version minor  # 1.2.0 -> 1.3.0
+hatch version major  # 1.2.0 -> 2.0.0
 
 # Build distribution manually
 python -m build
@@ -92,17 +114,35 @@ Custom exception hierarchy:
 
 ## Version Management
 
-Version is stored in `xcode_mcp_server/__init__.py` and managed by hatch:
+Version is stored in `xcode_mcp_server/__init__.py` and managed by hatch. The `deploy.sh` script automatically increments the patch version, but you can manually control it with:
 ```bash
 hatch version patch  # Increment patch version
 hatch version minor  # Increment minor version
 hatch version major  # Increment major version
 ```
 
-## Important Notes
+## Important Implementation Details
 
-- **get_frontmost_project**: Internal helper function (not exposed as MCP tool) that retrieves the currently open Xcode project path
+### Internal Helper Functions
+- **`get_frontmost_project()`**: Not exposed as MCP tool; retrieves the currently open Xcode project path from frontmost window
+- **`extract_console_logs_from_xcresult()`**: Parses .xcresult bundles to extract runtime console output
+- **`extract_build_errors_and_warnings()`**: Filters build logs to show only errors/warnings (configurable via `include_warnings` parameter)
+- **`wait_for_xcresult_after_timestamp()`**: Polls for new .xcresult files after a run starts, with timeout
+- **`find_xcresult_for_project()`**: Locates the most recent .xcresult bundle for a project
+- **`validate_and_normalize_project_path()`**: Ensures paths are absolute, exist, and are allowed by security policy
+- **`escape_applescript_string()`**: Properly escapes strings for safe AppleScript execution
+
+### Operational Behavior
 - **Scheme Selection**: When no scheme is specified in `build_project`, the active scheme is used automatically
 - **Debug Output**: Server prints debug information to stderr for troubleshooting
 - **Workspace Loading**: All operations wait for Xcode workspace to fully load before proceeding (60-second timeout)
 - **Build Log Filtering**: Build failures return only error lines (up to 25) from the full build log for clarity
+- **Warning Control**: Global `BUILD_WARNINGS_ENABLED` and `BUILD_WARNINGS_FORCED` flags control warning display; can be overridden per-tool with `include_warnings` parameter
+- **Notifications**: Optional macOS notifications via `osascript` (controlled by `NOTIFICATIONS_ENABLED` global flag)
+
+### xcresult Management
+The server relies heavily on Xcode's .xcresult bundles for extracting build and runtime information:
+- Located in `~/Library/Developer/Xcode/DerivedData/*/Logs/Test/`
+- Parsed using `xcrun xcresulttool get --format json`
+- Timestamped checking prevents reading stale results
+- Console logs extracted from `actionsInvocationRecord` → `actions` → `actionResult` → `logRef` paths
