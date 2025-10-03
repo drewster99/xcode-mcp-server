@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """list_running_mac_apps tool - List running macOS applications"""
 
+import sys
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_notification, run_applescript
@@ -16,6 +17,7 @@ def list_running_mac_apps() -> str:
         and status flags (frontmost/visible/hidden).
     """
     show_notification("Xcode MCP", "Listing running macOS applications")
+    print(f"DEBUG: listing running... doing applescript", file=sys.stderr)
 
     try:
         # Use AppleScript to get running applications
@@ -43,6 +45,7 @@ def list_running_mac_apps() -> str:
 
         success, output = run_applescript(script)
 
+        print(f"DEBUG: applescript done", file=sys.stderr)
         if not success:
             raise XCodeMCPError(f"Failed to list running apps: {output}")
 

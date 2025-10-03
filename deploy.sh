@@ -7,6 +7,8 @@ set -e  # Exit on error
 
 echo "🚀 Starting xcode-mcp-server deployment..."
 echo ""
+/bin/echo -n "Hit enter to continue:"
+read foo
 
 # Check dependencies
 MISSING_DEPS=()

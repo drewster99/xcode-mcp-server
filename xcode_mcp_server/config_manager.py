@@ -419,7 +419,7 @@ def apply_config(func):
         if config.should_show_notification(func.__name__, project_path):
             # Import here to avoid circular dependency
             from xcode_mcp_server.utils.applescript import show_notification
-            show_notification(func.__name__)
+            show_notification("Xcode MCP", func.__name__)
 
         # Call with modified parameters
         return func(*bound.args, **bound.kwargs)

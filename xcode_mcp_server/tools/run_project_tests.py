@@ -21,9 +21,128 @@ from xcode_mcp_server.utils.applescript import (
 from xcode_mcp_server.utils.xcresult import find_xcresult_bundle
 
 
+# TODO: Implement selective test execution with xcodebuild
+# AppleScript's 'test' command doesn't support -only-testing: flags, so we need
+# to use xcodebuild directly for running specific tests. However, xcodebuild also
+# requires specifying a run destination (-destination flag), which we need to
+# extract from Xcode's active run destination before implementing this feature.
+#
+# def _get_active_scheme(project_path: str) -> str:
+#     """Get the active scheme for a project using AppleScript"""
+#     escaped_path = escape_applescript_string(project_path)
+#     script = f'''
+# tell application "Xcode"
+#     open "{escaped_path}"
+#     delay 1
+#     set workspaceDoc to first workspace document whose path is "{escaped_path}"
+#     set activeScheme to active scheme of workspaceDoc
+#     return name of activeScheme
+# end tell
+#     '''
+#     success, output = run_applescript(script)
+#     if success:
+#         return output.strip()
+#     raise InvalidParameterError(f"Could not determine active scheme: {output}")
+#
+#
+# def _run_tests_with_xcodebuild(project_path: str, tests_to_run: List[str],
+#                                 scheme: Optional[str], max_wait_seconds: int) -> str:
+#     """Run specific tests using xcodebuild (AppleScript doesn't support -only-testing:)"""
+#
+#     # Determine if this is a workspace or project
+#     is_workspace = project_path.endswith('.xcworkspace')
+#     project_flag = '-workspace' if is_workspace else '-project'
+#
+#     # Get scheme if not provided
+#     if not scheme:
+#         scheme = _get_active_scheme(project_path)
+#
+#     # Build xcodebuild command
+#     cmd = [
+#         'xcodebuild',
+#         'test',
+#         project_flag,
+#         project_path,
+#         '-scheme',
+#         scheme
+#     ]
+#
+#     # Add -only-testing: arguments
+#     for test_id in tests_to_run:
+#         cmd.extend(['-only-testing', test_id])
+#
+#     print(f"DEBUG: Running xcodebuild command: {' '.join(cmd)}", file=sys.stderr)
+#
+#     # Run xcodebuild
+#     if max_wait_seconds == 0:
+#         # Start in background and return immediately
+#         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#         return "✅ Tests have been started. Use get_latest_test_results to check results later."
+#
+#     # Run and wait for completion
+#     try:
+#         result = subprocess.run(
+#             cmd,
+#             capture_output=True,
+#             text=True,
+#             timeout=max_wait_seconds
+#         )
+#
+#         # Wait a moment for xcresult to be written
+#         time.sleep(2)
+#
+#         # Get results from xcresult bundle
+#         xcresult_path = find_xcresult_bundle(project_path)
+#
+#         if xcresult_path:
+#             print(f"DEBUG: Found xcresult bundle at {xcresult_path}", file=sys.stderr)
+#
+#             try:
+#                 xcresult = subprocess.run(
+#                     ['xcrun', 'xcresulttool', 'get', 'test-results', 'tests', '--path', xcresult_path],
+#                     capture_output=True,
+#                     text=True,
+#                     timeout=10
+#                 )
+#
+#                 if xcresult.returncode == 0:
+#                     # Parse to show notification
+#                     try:
+#                         test_data = json.loads(xcresult.stdout)
+#                         failure_count = 0
+#                         if 'tests' in test_data and '_values' in test_data['tests']:
+#                             for test in test_data['tests']['_values']:
+#                                 if test.get('testStatus', '') == 'Failure':
+#                                     failure_count += 1
+#
+#                         if failure_count == 0:
+#                             show_result_notification("All tests PASSED")
+#                         else:
+#                             show_error_notification(f"{failure_count} test{'s' if failure_count != 1 else ''} FAILED")
+#                     except:
+#                         pass
+#
+#                     return xcresult.stdout
+#             except Exception as e:
+#                 print(f"DEBUG: Exception getting xcresult data: {e}", file=sys.stderr)
+#
+#         # Fallback to xcodebuild output
+#         if result.returncode == 0:
+#             show_result_notification("Tests PASSED")
+#             return "✅ Tests passed"
+#         else:
+#             show_error_notification("Tests FAILED")
+#             # Return last 50 lines of output
+#             lines = result.stdout.split('\n')
+#             return "❌ Tests failed\n\n" + '\n'.join(lines[-50:])
+#
+#     except subprocess.TimeoutExpired:
+#         show_result_notification(f"Tests timeout ({max_wait_seconds}s)")
+#         return f"⏳ Tests did not complete within {max_wait_seconds} seconds"
+
+
 @mcp.tool()
 def run_project_tests(project_path: str,
-                     tests_to_run: Optional[List[str]] = None,
                      scheme: Optional[str] = None,
                      max_wait_seconds: int = 300) -> str:
     """
@@ -31,9 +150,6 @@ def run_project_tests(project_path: str,
 
     Args:
         project_path: Path to Xcode project/workspace directory
-        tests_to_run: Optional list of test identifiers to run.
-                     If None or empty list, runs ALL tests.
-                     Format: ["BundleName/ClassName/testMethod", ...]
         scheme: Optional scheme to test (uses active scheme if not specified)
         max_wait_seconds: Maximum seconds to wait for completion (default 300).
                          Set to 0 to start tests and return immediately.
@@ -51,39 +167,28 @@ def run_project_tests(project_path: str,
     if max_wait_seconds < 0:
         raise InvalidParameterError("max_wait_seconds must be >= 0")
 
-    # Handle various forms of empty/invalid tests_to_run parameter
-    # This works around MCP client issues with optional list parameters
-    if tests_to_run is not None:
-        # Handle string inputs that might come from the client
-        if isinstance(tests_to_run, str):
-            tests_to_run = tests_to_run.strip()
-            if not tests_to_run or tests_to_run in ['[]', 'null', 'undefined', '']:
-                tests_to_run = None
-            else:
-                # Try to parse as a comma-separated list
-                tests_to_run = [t.strip() for t in tests_to_run.split(',') if t.strip()]
-        elif not tests_to_run:  # Empty list or other falsy value
-            tests_to_run = None
+    # TODO: Selective test execution - commented out until we can get active run destination
+    # # Handle various forms of empty/invalid tests_to_run parameter
+    # # This works around MCP client issues with optional list parameters
+    # if tests_to_run is not None:
+    #     # Handle string inputs that might come from the client
+    #     if isinstance(tests_to_run, str):
+    #         tests_to_run = tests_to_run.strip()
+    #         if not tests_to_run or tests_to_run in ['[]', 'null', 'undefined', '']:
+    #             tests_to_run = None
+    #         else:
+    #             # Try to parse as a comma-separated list
+    #             tests_to_run = [t.strip() for t in tests_to_run.split(',') if t.strip()]
+    #     elif not tests_to_run:  # Empty list or other falsy value
+    #         tests_to_run = None
+    #
+    # # If specific tests are requested, use xcodebuild (AppleScript doesn't support -only-testing:)
+    # if tests_to_run:
+    #     return _run_tests_with_xcodebuild(project_path, tests_to_run, scheme, max_wait_seconds)
 
-    # Escape for AppleScript
+    # For running all tests, use AppleScript
     escaped_path = escape_applescript_string(project_path)
-
-    # Build test arguments
-    test_args = []
-    if tests_to_run:  # If list is provided and not empty
-        for test_id in tests_to_run:
-            # Add -only-testing: prefix for each test
-            test_args.append(f'-only-testing:{test_id}')
-    # If tests_to_run is None or [], we run all tests (no arguments needed)
-
-    # Build the AppleScript
-    if test_args:
-        # Format arguments for AppleScript list
-        args_list = ', '.join([f'"{escape_applescript_string(arg)}"' for arg in test_args])
-        test_command = f'test workspaceDoc with command line arguments {{{args_list}}}'
-    else:
-        # Run all tests
-        test_command = 'test workspaceDoc'
+    test_command = 'test workspaceDoc'
 
     # Build the script differently based on max_wait_seconds
     if max_wait_seconds > 0:

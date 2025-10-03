@@ -171,12 +171,6 @@ mcp dev xcode_mcp_server/__main__.py
 
 This opens an inspector interface where you can test tools directly. Provide paths as quoted strings: `"/Users/you/Projects/MyApp.xcodeproj"`
 
-### Building and Publishing
-
-```bash
-./deploy.sh  # Increments version, builds, and uploads to PyPI
-```
-
 ## Limitations
 
 - AppleScript syntax may need adjustments for specific Xcode versions

@@ -31,7 +31,11 @@
       "Read(//Users/andrew/Library/**)",
       "WebSearch",
       "Bash(uv pip list:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Read(//Users/andrew/.xcode-mcp-server/**)",
+      "Bash(cat:*)"
     ],
     "deny": []
   }
