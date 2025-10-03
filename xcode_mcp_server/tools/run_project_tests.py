@@ -161,7 +161,7 @@ def run_project_tests(project_path: str,
     project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
 
     # Show starting notification for long-running operation
-    show_notification("Xcode MCP", f"Running tests", subtitle=os.path.basename(project_path))
+    show_notification("Drew's Xcode MCP", f"Running tests", subtitle=os.path.basename(project_path))
 
     # Validate wait time
     if max_wait_seconds < 0:

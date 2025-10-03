@@ -21,7 +21,7 @@ def list_mac_app_windows() -> str:
         A formatted list of windows grouped by application, including window IDs
         that can be used with `take_window_screenshot`.
     """
-    show_notification("Xcode MCP", "Listing macOS application windows")
+    show_notification("Drew's Xcode MCP", "Listing macOS application windows")
 
     try:
         # Use Swift to get window information via CoreGraphics

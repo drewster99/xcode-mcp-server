@@ -16,7 +16,7 @@ def list_running_mac_apps() -> str:
         A formatted list of running applications with their name, bundle ID,
         and status flags (frontmost/visible/hidden).
     """
-    show_notification("Xcode MCP", "Listing running macOS applications")
+    show_notification("Drew's Xcode MCP", "Listing running macOS applications")
     print(f"DEBUG: listing running... doing applescript", file=sys.stderr)
 
     try:

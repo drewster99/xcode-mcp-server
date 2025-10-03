@@ -65,9 +65,9 @@ def show_notification(title: str, message: str, subtitle: str = None, sound: boo
 
 def show_error_notification(message: str, details: str = None):
     """Show an error notification with sound"""
-    show_notification("Xcode MCP", message, subtitle=details, sound=True)
+    show_notification("Drew's Xcode MCP", message, subtitle=details, sound=True)
 
 
 def show_result_notification(message: str, details: str = None):
     """Show a result notification"""
-    show_notification("Xcode MCP", message, subtitle=details)
+    show_notification("Drew's Xcode MCP", message, subtitle=details)

@@ -47,7 +47,7 @@ def build_project(project_path: str,
     # Show building notification
     project_name = os.path.basename(normalized_path)
     scheme_name = scheme if scheme else "active scheme"
-    show_notification("Xcode MCP", f"Building {project_name}", subtitle=scheme_name)
+    show_notification("Drew's Xcode MCP", f"Building {project_name}", subtitle=scheme_name)
 
     # Build the AppleScript
     if scheme:

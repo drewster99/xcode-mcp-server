@@ -62,7 +62,7 @@ def run_project(project_path: str,
     # Show running notification
     project_name = os.path.basename(normalized_path)
     scheme_name = scheme if scheme else "active scheme"
-    show_notification("Xcode MCP", f"Running {project_name}", subtitle=scheme_name)
+    show_notification("Drew's Xcode MCP", f"Running {project_name}", subtitle=scheme_name)
 
     # Build the AppleScript that runs and polls in one script
     if scheme:
