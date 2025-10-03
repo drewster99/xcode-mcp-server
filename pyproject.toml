@@ -26,6 +26,8 @@ classifiers = [
 ]
 dependencies = [
     "mcp[cli]>=1.2.0",
+    "questionary>=2.0.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]

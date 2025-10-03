@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""get_build_errors tool - Get build errors from last build"""
+
+from typing import Optional
+
+from xcode_mcp_server.server import mcp
+from xcode_mcp_server.security import validate_and_normalize_project_path
+from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
+from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript
+from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
+
+
+@mcp.tool()
+def get_build_errors(project_path: str,
+                    include_warnings: Optional[bool] = None) -> str:
+    """
+    Get the build errors from the last build for the specified Xcode project or workspace.
+
+    Args:
+        project_path: Path to an Xcode project or workspace directory.
+        include_warnings: Include warnings in output. If not provided, uses global setting.
+
+    Returns:
+        A string containing the build errors/warnings or a message if there are none
+    """
+    # Validate include_warnings parameter
+    if include_warnings is not None and not isinstance(include_warnings, bool):
+        raise InvalidParameterError("include_warnings must be a boolean value")
+
+    # Validate and normalize path
+    normalized_path = validate_and_normalize_project_path(project_path, "Getting build errors for")
+    escaped_path = escape_applescript_string(normalized_path)
+
+    # Get the last build log from the workspace
+    script = f'''
+    tell application "Xcode"
+        open "{escaped_path}"
+
+        -- Get the workspace document
+        set workspaceDoc to first workspace document whose path is "{escaped_path}"
+
+        -- Wait for it to load (timeout after ~30 seconds)
+        repeat 60 times
+            if loaded of workspaceDoc is true then exit repeat
+            delay 0.5
+        end repeat
+
+        if loaded of workspaceDoc is false then
+            error "Xcode workspace did not load in time."
+        end if
+
+        -- Try to get the last build log
+        try
+            -- Get the most recent build action result
+            set lastBuildResult to last build action result of workspaceDoc
+
+            -- Get its build log
+            return build log of lastBuildResult
+        on error
+            -- No build has been performed yet
+            return ""
+        end try
+    end tell
+    '''
+
+    success, output = run_applescript(script)
+
+    if success:
+        if output == "":
+            return "No build has been performed yet for this project."
+        else:
+            # Use the shared helper to extract and format errors/warnings
+            return extract_build_errors_and_warnings(output, include_warnings)
+    else:
+        raise XCodeMCPError(f"Failed to retrieve build errors: {output}")
