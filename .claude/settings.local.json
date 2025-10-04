@@ -35,7 +35,10 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
       "Read(//Users/andrew/.xcode-mcp-server/**)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Read(//tmp/**)",
+      "Bash(grep:*)",
+      "Bash(awk:*)"
     ],
     "deny": []
   }
