@@ -7,7 +7,7 @@ import subprocess
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.exceptions import XCodeMCPError
-from xcode_mcp_server.utils.applescript import show_notification
+from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 
 
 @mcp.tool()
@@ -21,8 +21,6 @@ def list_mac_app_windows() -> str:
         A formatted list of windows grouped by application, including window IDs
         that can be used with `take_window_screenshot`.
     """
-    show_notification("Drew's Xcode MCP", "Listing macOS application windows")
-
     try:
         # Use Swift to get window information via CoreGraphics
         swift_code = '''
@@ -80,6 +78,7 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
             )
 
             if result.returncode != 0:
+                show_error_notification("Failed to get window list", result.stderr)
                 raise XCodeMCPError(f"Failed to get window list: {result.stderr}")
 
             output = result.stdout
@@ -93,7 +92,9 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 
         # Check for error
         if output.startswith("ERROR:"):
-            raise XCodeMCPError(output.replace("ERROR: ", ""))
+            error_msg = output.replace("ERROR: ", "")
+            show_error_notification("Failed to get window list", error_msg)
+            raise XCodeMCPError(error_msg)
 
         # Parse the output
         apps_with_windows = {}
@@ -116,11 +117,13 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
                     })
 
         if not apps_with_windows:
+            show_result_notification("No visible windows found")
             return "No visible windows found"
 
         # Format output - one line per window
         output_lines = []
         total_windows = sum(len(windows) for windows in apps_with_windows.values())
+        show_result_notification(f"Found {total_windows} window{'s' if total_windows != 1 else ''}", f"{len(apps_with_windows)} app{'s' if len(apps_with_windows) != 1 else ''}")
         output_lines.append(f"Found {total_windows} window(s) across {len(apps_with_windows)} application(s):")
         output_lines.append("")
 
@@ -136,5 +139,7 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 
     except Exception as e:
         if isinstance(e, XCodeMCPError):
+            # XCodeMCPError already has error notification from line 83
             raise
+        show_error_notification("Error listing windows", str(e))
         raise XCodeMCPError(f"Error listing windows: {e}")

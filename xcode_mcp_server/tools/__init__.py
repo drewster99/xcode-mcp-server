@@ -22,3 +22,4 @@ from . import take_app_screenshot
 from . import list_project_tests
 from . import run_project_tests
 from . import get_latest_test_results
+from . import debug_list_notification_history

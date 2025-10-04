@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """get_project_schemes tool - Get available build schemes"""
 
+import os
+
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
-from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript
+from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_error_notification, show_result_notification
 
 
 @mcp.tool()
@@ -79,7 +81,17 @@ def get_project_schemes(project_path: str) -> str:
 
     if success:
         if output:
+            # Count schemes and show notification
+            scheme_lines = [line for line in output.split('\n') if line.strip()]
+            scheme_count = len(scheme_lines)
+            # Show first 3 schemes as preview
+            preview_schemes = '\n'.join(scheme_lines[:3])
+            if scheme_count > 3:
+                preview_schemes += f'\n+{scheme_count - 3} more'
+            show_result_notification(f"Found {scheme_count} scheme{'s' if scheme_count != 1 else ''}", preview_schemes)
+
             output += "\n\nUse `build_project` with a scheme name, or omit the scheme parameter to build the active scheme."
         return output
     else:
+        show_error_notification("Failed to get schemes", output)
         raise XCodeMCPError(f"Failed to get schemes for {project_path}: {output}")

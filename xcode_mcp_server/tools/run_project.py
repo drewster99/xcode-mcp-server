@@ -62,7 +62,7 @@ def run_project(project_path: str,
     # Show running notification
     project_name = os.path.basename(normalized_path)
     scheme_name = scheme if scheme else "active scheme"
-    show_notification("Drew's Xcode MCP", f"Running {project_name}", subtitle=scheme_name)
+    show_notification("Drew's Xcode MCP", subtitle=scheme_name, message=f"Running {project_name}")
 
     # Build the AppleScript that runs and polls in one script
     if scheme:
@@ -146,6 +146,7 @@ def run_project(project_path: str,
     success, output = run_applescript(script)
 
     if not success:
+        show_error_notification("Failed to run project", project_name)
         raise XCodeMCPError(f"Run failed: {output}")
 
     # Parse the result
@@ -153,6 +154,7 @@ def run_project(project_path: str,
     parts = output.split("|")
 
     if len(parts) != 2:
+        show_error_notification("Unexpected run output format", project_name)
         raise XCodeMCPError(f"Unexpected output format: {output}")
 
     completed = parts[0].strip().lower() == "true"
@@ -168,9 +170,11 @@ def run_project(project_path: str,
 
     if not xcresult_path:
         if completed:
+            show_error_notification("Run completed but logs unavailable", f"Status: {final_status}")
             return f"Run completed with status: {final_status}. Could not find xcresult file (modified after start time) to extract console logs."
         else:
-            return f"Run did not complete within {wait_seconds} seconds (status: {final_status}). Could not extract console logs."
+            # No notification for still-running case
+            return f"Still running after {wait_seconds} seconds (status: {final_status}). Try `get_runtime_output` after process exits."
 
     print(f"Using xcresult: {xcresult_path}", file=sys.stderr)
 
@@ -178,7 +182,7 @@ def run_project(project_path: str,
     success, console_output = extract_console_logs_from_xcresult(xcresult_path, max_lines, regex_filter)
 
     if not success:
-        show_error_notification(f"Run failed: {final_status}")
+        show_error_notification("Failed to extract logs", f"Status: {final_status}")
         return f"Run completed with status: {final_status}. {console_output}"
 
     if not console_output:

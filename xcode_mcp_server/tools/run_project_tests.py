@@ -16,7 +16,8 @@ from xcode_mcp_server.utils.applescript import (
     run_applescript,
     show_notification,
     show_result_notification,
-    show_error_notification
+    show_error_notification,
+    show_warning_notification
 )
 from xcode_mcp_server.utils.xcresult import find_xcresult_bundle
 
@@ -160,12 +161,15 @@ def run_project_tests(project_path: str,
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
 
-    # Show starting notification for long-running operation
-    show_notification("Drew's Xcode MCP", f"Running tests", subtitle=os.path.basename(project_path))
-
     # Validate wait time
     if max_wait_seconds < 0:
         raise InvalidParameterError("max_wait_seconds must be >= 0")
+
+    # Show notification based on whether running in background or waiting
+    if max_wait_seconds == 0:
+        show_notification("Drew's Xcode MCP", subtitle=os.path.basename(project_path), message="Starting tests in background")
+    else:
+        show_notification("Drew's Xcode MCP", subtitle=os.path.basename(project_path), message="Running tests")
 
     # TODO: Selective test execution - commented out until we can get active run destination
     # # Handle various forms of empty/invalid tests_to_run parameter
@@ -311,10 +315,11 @@ end tell
     success, output = run_applescript(script)
 
     if not success:
+        show_error_notification("Failed to run tests", os.path.basename(project_path))
         return f"Failed to run tests: {output}"
 
     if max_wait_seconds == 0:
-        return "✅ Tests have been started. Use get_latest_test_results to check results later."
+        return "✅ Tests started in background. Use get_latest_test_results to check results later."
 
     # Debug: Log raw output to see what we're getting
     if os.environ.get('XCODE_MCP_DEBUG'):
@@ -337,7 +342,7 @@ end tell
     if not completed:
         output_lines.append(f"⏳ Tests did not complete within {max_wait_seconds} seconds")
         output_lines.append(f"Status: {status}")
-        show_result_notification(f"Tests timeout ({max_wait_seconds}s)")
+        show_warning_notification(f"Tests timeout ({max_wait_seconds}s)")
         return '\n'.join(output_lines)
 
     # If tests completed, get detailed results from xcresult
@@ -392,5 +397,5 @@ end tell
         show_error_notification("Tests FAILED")
         return "❌ Tests failed\n\nNo detailed test results available - xcresult bundle not found"
     else:
-        show_result_notification(f"Tests: {status}")
+        show_warning_notification(f"Tests: {status}")
         return f"Test run status: {status}"

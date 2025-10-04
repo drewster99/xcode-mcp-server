@@ -49,6 +49,7 @@ def take_app_screenshot(app_name: str) -> str:
 
         # If multiple apps match, return error with window list
         if len(matching_apps) > 1:
+            show_error_notification("Multiple apps match", f"{len(matching_apps)} apps match '{app_name}'")
             output_lines = [f"Multiple apps match '{app_name}'. Please be more specific:"]
             output_lines.append("")
 
@@ -67,6 +68,7 @@ def take_app_screenshot(app_name: str) -> str:
         windows = matching_apps[app_matched]
 
         if not windows:
+            show_error_notification("No visible windows", app_matched)
             raise XCodeMCPError(f"App '{app_matched}' has no visible windows")
 
         # Limit to 5 windows
@@ -98,6 +100,7 @@ def take_app_screenshot(app_name: str) -> str:
             )
 
             if result.returncode != 0:
+                show_error_notification("Failed to capture window", f"Window {window['id']}")
                 raise XCodeMCPError(f"Failed to capture window {window['id']}: {result.stderr}")
 
             # Verify file was created

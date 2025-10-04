@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """clean_project tool - Clean an Xcode project"""
 
+import os
+
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
-from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript
+from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_result_notification, show_error_notification
 
 
 @mcp.tool()
@@ -49,7 +51,11 @@ def clean_project(project_path: str) -> str:
 
     success, output = run_applescript(script)
 
+    project_name = os.path.basename(normalized_path)
+
     if success:
+        show_result_notification("Clean completed", project_name)
         return output
     else:
+        show_error_notification("Clean failed", project_name)
         raise XCodeMCPError(f"Clean failed: {output}")

@@ -13,7 +13,8 @@ from xcode_mcp_server.utils.applescript import (
     run_applescript,
     show_notification,
     show_result_notification,
-    show_error_notification
+    show_error_notification,
+    show_warning_notification
 )
 from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
 
@@ -47,7 +48,7 @@ def build_project(project_path: str,
     # Show building notification
     project_name = os.path.basename(normalized_path)
     scheme_name = scheme if scheme else "active scheme"
-    show_notification("Drew's Xcode MCP", f"Building {project_name}", subtitle=scheme_name)
+    show_notification("Drew's Xcode MCP", subtitle=scheme_name, message=f"Building {project_name}")
 
     # Build the AppleScript
     if scheme:
@@ -145,9 +146,16 @@ end tell
         else:
             # Use the shared helper to extract and format errors/warnings
             errors_output = extract_build_errors_and_warnings(output, include_warnings)
-            # Count errors for notification
-            error_count = errors_output.count("error:")
-            show_error_notification(f"Build failed", f"{error_count} error{'s' if error_count != 1 else ''}")
+
+            # Check if this is warnings-only (build succeeded with warnings) vs errors
+            if errors_output.startswith("Build completed with"):
+                # Warnings only - build succeeded
+                warning_count = errors_output.count("warning:")
+                show_warning_notification(f"Build succeeded with warnings", f"{warning_count} warning{'s' if warning_count != 1 else ''}")
+            else:
+                # Has errors - build failed
+                error_count = errors_output.count("error:")
+                show_error_notification(f"Build failed", f"{error_count} error{'s' if error_count != 1 else ''}")
             return errors_output
     else:
         show_error_notification("Build failed to start")

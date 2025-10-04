@@ -7,6 +7,7 @@ import subprocess
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import validate_and_normalize_project_path
+from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 
 
 @mcp.tool()
@@ -66,12 +67,16 @@ def list_project_tests(project_path: str) -> str:
                         continue
 
             if tests:
+                test_count = len(tests)
+                show_result_notification(f"Found {test_count} test{'s' if test_count != 1 else ''}", os.path.basename(project_path))
                 result = "\n".join(sorted(tests))
                 result += "\n\nUse `run_project_tests` to run all tests or pass specific test identifiers to run selected tests."
                 return result
 
+        show_result_notification("Found 0 tests", os.path.basename(project_path))
         return f"Could not find test files for project: {os.path.basename(project_path)}\n" + \
                "Make sure your test files follow naming convention (*Test.swift or *Tests.swift)"
 
     except Exception as e:
+        show_error_notification("Error listing tests", str(e))
         return f"Error listing tests: {str(e)}"

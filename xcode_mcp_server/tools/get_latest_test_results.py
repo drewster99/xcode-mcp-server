@@ -12,7 +12,8 @@ from xcode_mcp_server.utils.applescript import (
     escape_applescript_string,
     run_applescript,
     show_result_notification,
-    show_error_notification
+    show_error_notification,
+    show_warning_notification
 )
 from xcode_mcp_server.utils.xcresult import find_xcresult_bundle
 
@@ -79,6 +80,7 @@ def get_latest_test_results(project_path: str) -> str:
             pass
 
     # Fallback: Try to get from Xcode via AppleScript
+    show_warning_notification("Using AppleScript fallback", "xcresult unavailable or parsing failed")
     escaped_path = escape_applescript_string(project_path)
 
     script = f'''
@@ -131,5 +133,5 @@ end tell
             show_error_notification("Tests FAILED")
         return output
     else:
-        show_result_notification("No test results")
+        show_error_notification("Failed to get test results", "AppleScript fallback also failed")
         return "No test results available"

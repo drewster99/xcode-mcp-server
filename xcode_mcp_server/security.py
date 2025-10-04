@@ -135,7 +135,7 @@ def validate_and_normalize_project_path(project_path: str, function_name: str) -
         AccessDeniedError: If path access is denied
     """
     # Import here to avoid circular dependency
-    from xcode_mcp_server.utils.applescript import show_error_notification
+    from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
 
     # Basic validation
     if not project_path or project_path.strip() == "":
@@ -149,14 +149,12 @@ def validate_and_normalize_project_path(project_path: str, function_name: str) -
 
     # Security check
     if not is_path_allowed(project_path):
-        error_msg = f"Access denied: {os.path.basename(project_path)}"
-        show_error_notification(error_msg)
+        show_access_denied_notification(f"Access denied: {os.path.basename(project_path)}")
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
     # Check if the path exists
     if not os.path.exists(project_path):
-        error_msg = f"Path not found: {os.path.basename(project_path)}"
-        show_error_notification(error_msg)
+        show_error_notification(f"Path not found: {os.path.basename(project_path)}")
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
 
     # Normalize the path to resolve symlinks

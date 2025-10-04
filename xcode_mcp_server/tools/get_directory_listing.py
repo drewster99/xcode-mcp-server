@@ -9,7 +9,7 @@ from typing import Optional
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import is_path_allowed
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError, XCodeMCPError
-from xcode_mcp_server.utils.applescript import show_error_notification
+from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
 
 
 @mcp.tool()
@@ -51,21 +51,18 @@ def get_directory_listing(directory_path: str,
 
     # Security check
     if not is_path_allowed(directory_path):
-        error_msg = f"Access denied: {directory_path}"
-        show_error_notification(error_msg)
+        show_access_denied_notification(f"Access denied: {directory_path}")
         raise AccessDeniedError(f"Access to path '{directory_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
     # Normalize and check path
     directory_path = os.path.realpath(directory_path)
 
     if not os.path.exists(directory_path):
-        error_msg = f"Path not found: {directory_path}"
-        show_error_notification(error_msg)
+        show_error_notification(f"Path not found: {directory_path}")
         raise InvalidParameterError(f"Path does not exist: {directory_path}")
 
     if not os.path.isdir(directory_path):
-        error_msg = f"Not a directory: {directory_path}"
-        show_error_notification(error_msg)
+        show_error_notification(f"Not a directory: {directory_path}")
         raise InvalidParameterError(f"Path is not a directory: {directory_path}")
 
     # Helper function to format file size

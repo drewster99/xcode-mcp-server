@@ -4,7 +4,7 @@
 import sys
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.exceptions import XCodeMCPError
-from xcode_mcp_server.utils.applescript import show_notification, run_applescript
+from xcode_mcp_server.utils.applescript import show_notification, run_applescript, show_result_notification, show_error_notification
 
 
 @mcp.tool()
@@ -16,7 +16,7 @@ def list_running_mac_apps() -> str:
         A formatted list of running applications with their name, bundle ID,
         and status flags (frontmost/visible/hidden).
     """
-    show_notification("Drew's Xcode MCP", "Listing running macOS applications")
+    show_notification("Drew's Xcode MCP", message="Listing running macOS applications")
     print(f"DEBUG: listing running... doing applescript", file=sys.stderr)
 
     try:
@@ -47,6 +47,7 @@ def list_running_mac_apps() -> str:
 
         print(f"DEBUG: applescript done", file=sys.stderr)
         if not success:
+            show_error_notification("Failed to list running apps", output)
             raise XCodeMCPError(f"Failed to list running apps: {output}")
 
         # Parse the output
@@ -78,9 +79,11 @@ def list_running_mac_apps() -> str:
         apps.sort(key=lambda x: x['name'].lower())
 
         if not apps:
+            show_result_notification("No running applications found")
             return "No running applications found"
 
         # Format output
+        show_result_notification(f"Found {len(apps)} running app{'s' if len(apps) != 1 else ''}")
         output_lines = [f"Found {len(apps)} running application(s):", ""]
 
         for app in apps:
@@ -102,5 +105,7 @@ def list_running_mac_apps() -> str:
 
     except Exception as e:
         if isinstance(e, XCodeMCPError):
+            # XCodeMCPError already has error notification from line 50
             raise
+        show_error_notification("Error listing applications", str(e))
         raise XCodeMCPError(f"Error listing applications: {e}")

@@ -14,5 +14,5 @@ def version() -> str:
     Returns:
         The version string of the server
     """
-    show_result_notification(f"XcodeMCP v{__version__}")
+    show_result_notification(f"Version {__version__}")
     return f"Xcode MCP Server version {__version__}"

@@ -109,5 +109,23 @@ All specified folders must:
     # This must be done before mcp.run()
     from xcode_mcp_server import tools
 
+    # Show startup notification
+    from xcode_mcp_server.utils.applescript import show_notification
+
+    # Format the working directory relative to home if possible
+    home = os.path.expanduser("~")
+    if cwd.startswith(home):
+        # Make it relative to home with ~ prefix
+        display_cwd = "~" + cwd[len(home):]
+    else:
+        display_cwd = cwd
+
+    show_notification(
+        f"Drew's Xcode MCP Server - v{__version__}",
+
+        message="Working dir: " + display_cwd,
+        subtitle="✅ Server started"
+    )
+
     # Run the server
     mcp.run()

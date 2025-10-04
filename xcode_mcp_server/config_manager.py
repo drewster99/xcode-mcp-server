@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 import json
 import hashlib
 import inspect
@@ -409,17 +410,44 @@ def apply_config(func):
             from xcode_mcp_server.exceptions import XCodeMCPError
             raise XCodeMCPError(f"{func.__name__} is disabled in configuration")
 
-        # Apply parameter overrides
+        # Apply parameter overrides (track which ones for debugging)
+        overridden_params = []
         for param_name in sig.parameters:
             override = config.get_parameter_override(func.__name__, param_name, project_path)
             if override is not None:
+                overridden_params.append(f"{param_name}={override}")
                 bound.arguments[param_name] = override
 
+        # Check if notification should be shown
+        should_notify = config.should_show_notification(func.__name__, project_path)
+
+        # DEBUG: Show configuration info in alert
+        import subprocess
+        debug_lines = [
+            "[apply_config DEBUG]",
+            f"Function: {func.__name__}",
+            f"Project: {project_path or 'None'}",
+            f"Show notification: {should_notify}",
+            f"Overridden params: {', '.join(overridden_params) if overridden_params else 'None'}"
+        ]
+        debug_msg = "\\n".join(debug_lines)
+
+        # Print to stderr
+        print(debug_msg.replace("\\n", "\n"), file=sys.stderr)
+
+        # Show in AppleScript alert (temporary debugging)
+        try:
+            alert_script = f'display alert "apply_config Debug" message "{debug_msg}"'
+            # No timeout - let the user dismiss it when ready
+            subprocess.run(['osascript', '-e', alert_script], capture_output=True)
+        except:
+            pass  # Ignore alert errors
+
         # Show notification if enabled
-        if config.should_show_notification(func.__name__, project_path):
+        if should_notify:
             # Import here to avoid circular dependency
             from xcode_mcp_server.utils.applescript import show_notification
-            show_notification("Drew's Xcode MCP", func.__name__)
+            show_notification("Drew's Xcode MCP", message=func.__name__)
 
         # Call with modified parameters
         return func(*bound.args, **bound.kwargs)

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """stop_project tool - Stop build/run operations"""
 
+import os
+
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
-from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript
+from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_result_notification, show_error_notification
 
 
 @mcp.tool()
@@ -45,15 +47,21 @@ def stop_project(project_path: str) -> str:
 
     success, output = run_applescript(script)
 
+    project_name = os.path.basename(normalized_path)
+
     if success:
         if output.startswith("ERROR:"):
             # Extract the error message
             error_msg = output[6:].strip()
             if "No open workspace found" in error_msg:
+                show_error_notification("Project not open in Xcode", project_name)
                 raise InvalidParameterError(f"Project is not currently open in Xcode: {project_path}")
             else:
+                show_error_notification("Failed to stop", error_msg)
                 raise XCodeMCPError(f"Failed to stop build/run: {error_msg}")
         else:
+            show_result_notification("Stopped", project_name)
             return output
     else:
+        show_error_notification("Failed to stop", project_name)
         raise XCodeMCPError(f"Failed to stop build/run for {project_path}: {output}")

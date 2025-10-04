@@ -87,6 +87,7 @@ def take_window_screenshot(window_id_or_name: str) -> str:
             )
 
             if result.returncode != 0:
+                show_error_notification("Failed to capture window", f"Window {window_id}")
                 raise XCodeMCPError(f"Failed to capture window {window_id}: {result.stderr}")
 
             # Verify file was created

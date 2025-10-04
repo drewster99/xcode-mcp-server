@@ -86,10 +86,13 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
             error_msg = result.stderr.strip()
             # Provide more helpful error messages
             if 'Invalid device' in error_msg:
+                show_error_notification("Invalid simulator UDID", target_udid)
                 raise XCodeMCPError(f"Simulator with UDID '{target_udid}' does not exist")
             elif 'not booted' in error_msg.lower():
+                show_error_notification("Simulator not booted", target_udid)
                 raise XCodeMCPError(f"Simulator with UDID '{target_udid}' is not booted")
             else:
+                show_error_notification("Failed to take screenshot", error_msg)
                 raise XCodeMCPError(f"Failed to take screenshot: {error_msg}")
 
         # Verify the file was created

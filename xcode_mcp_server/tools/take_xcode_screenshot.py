@@ -64,10 +64,12 @@ def take_xcode_screenshot(project_path: str) -> str:
 
         success, window_id = run_applescript(script)
         if not success:
+            show_error_notification("Failed to get Xcode window", window_id)
             raise XCodeMCPError(f"Failed to get Xcode window: {window_id}")
 
         window_id = window_id.strip()
         if not window_id:
+            show_error_notification("No Xcode window found", workspace_name)
             raise XCodeMCPError(f"No Xcode window found for project: {workspace_name}")
 
         print(f"Found Xcode window with ID: {window_id}", file=sys.stderr)
@@ -93,6 +95,7 @@ def take_xcode_screenshot(project_path: str) -> str:
         )
 
         if result.returncode != 0:
+            show_error_notification("Failed to capture screenshot", result.stderr)
             raise XCodeMCPError(f"Failed to capture screenshot: {result.stderr}")
 
         # Verify the file was created

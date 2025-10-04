@@ -8,7 +8,7 @@ import subprocess
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import ALLOWED_FOLDERS, is_path_allowed
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError
-from xcode_mcp_server.utils.applescript import show_error_notification, show_result_notification
+from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification, show_result_notification, show_warning_notification
 
 
 @mcp.tool()
@@ -41,14 +41,12 @@ def get_xcode_projects(search_path: str = "") -> str:
 
         # Security check
         if not is_path_allowed(project_path):
-            error_msg = f"Access denied: {project_path}"
-            show_error_notification(error_msg)
+            show_access_denied_notification(f"Access denied: {project_path}")
             raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
         # Check if the path exists
         if not os.path.exists(project_path):
-            error_msg = f"Path not found: {project_path}"
-            show_error_notification(error_msg)
+            show_error_notification(f"Path not found: {project_path}")
             raise InvalidParameterError(f"Project path does not exist: {project_path}")
 
         paths_to_search = [project_path]
@@ -65,6 +63,7 @@ def get_xcode_projects(search_path: str = "") -> str:
             if result:
                 all_results.extend(result.split('\n'))
         except Exception as e:
+            show_warning_notification(f"mdfind failed for {os.path.basename(path)}", str(e))
             print(f"Warning: Error searching in {path}: {str(e)}", file=sys.stderr)
             continue
 
