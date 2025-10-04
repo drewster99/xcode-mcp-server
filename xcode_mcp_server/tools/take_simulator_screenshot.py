@@ -9,12 +9,14 @@ import subprocess
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 from xcode_mcp_server.utils.screenshot import _get_booted_simulators
 
 
 @mcp.tool()
+@apply_config
 def take_simulator_screenshot(udid: Optional[str] = None) -> str:
     """
     Take a screenshot of a booted iOS simulator.

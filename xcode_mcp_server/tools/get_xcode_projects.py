@@ -7,6 +7,7 @@ import subprocess
 import re
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import ALLOWED_FOLDERS, is_path_allowed
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError
 from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification, show_result_notification, show_warning_notification
@@ -168,6 +169,7 @@ def _filter_project_results(paths: list[str], search_paths: list[str] = None, ma
 
 
 @mcp.tool()
+@apply_config
 def get_xcode_projects(
     search_path: str = "",
     include_recents: bool = True,

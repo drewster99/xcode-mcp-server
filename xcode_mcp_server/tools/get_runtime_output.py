@@ -5,6 +5,7 @@ import sys
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.xcresult import find_xcresult_for_project, extract_console_logs_from_xcresult
@@ -12,6 +13,7 @@ from xcode_mcp_server.utils.applescript import show_error_notification, show_war
 
 
 @mcp.tool()
+@apply_config
 def get_runtime_output(project_path: str,
                       max_lines: int = 25,
                       regex_filter: Optional[str] = None) -> str:

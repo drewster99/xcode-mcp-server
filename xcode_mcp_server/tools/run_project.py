@@ -8,6 +8,7 @@ import datetime
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
@@ -24,6 +25,7 @@ from xcode_mcp_server.utils.xcresult import (
 
 
 @mcp.tool()
+@apply_config
 def run_project(project_path: str,
                wait_seconds: int,
                scheme: Optional[str] = None,

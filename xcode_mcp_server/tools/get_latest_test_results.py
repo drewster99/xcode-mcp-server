@@ -7,6 +7,7 @@ import json
 import datetime
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.utils.applescript import (
     escape_applescript_string,
@@ -19,6 +20,7 @@ from xcode_mcp_server.utils.xcresult import find_xcresult_bundle
 
 
 @mcp.tool()
+@apply_config
 def get_latest_test_results(project_path: str) -> str:
     """
     Get the test results from the most recent test run.

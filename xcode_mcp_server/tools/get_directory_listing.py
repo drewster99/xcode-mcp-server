@@ -7,12 +7,14 @@ import datetime
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import is_path_allowed
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
 
 
 @mcp.tool()
+@apply_config
 def get_directory_listing(directory_path: str,
                          regex_filter: Optional[str] = None,
                          sort_by: str = "time",

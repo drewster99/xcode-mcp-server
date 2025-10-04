@@ -3,10 +3,12 @@
 
 import subprocess
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.utils.applescript import get_notification_history
 
 
 @mcp.tool()
+@apply_config
 def debug_list_notification_history() -> str:
     """
     List all notifications that have been posted since the server started.

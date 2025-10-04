@@ -4,12 +4,14 @@
 import subprocess
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 from xcode_mcp_server.utils.screenshot import _get_booted_simulators
 
 
 @mcp.tool()
+@apply_config
 def list_booted_simulators() -> str:
     """
     List all currently booted iOS, iPadOS, tvOS, and watchOS simulators.

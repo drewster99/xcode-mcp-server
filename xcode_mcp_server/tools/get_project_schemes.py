@@ -4,12 +4,14 @@
 import os
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_error_notification, show_result_notification
 
 
 @mcp.tool()
+@apply_config
 def get_project_schemes(project_path: str) -> str:
     """
     Get the available build schemes for the specified Xcode project or workspace.

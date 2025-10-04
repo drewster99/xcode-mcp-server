@@ -5,12 +5,14 @@ import os
 from typing import List
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import is_path_allowed
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
 
 
 @mcp.tool()
+@apply_config
 def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     """
     Get a visual tree of directories (folders only) in the specified path.

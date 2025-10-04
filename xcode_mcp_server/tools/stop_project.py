@@ -4,12 +4,14 @@
 import os
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_result_notification, show_error_notification
 
 
 @mcp.tool()
+@apply_config
 def stop_project(project_path: str) -> str:
     """
     Stop the currently running build or run operation for the specified Xcode project or workspace.

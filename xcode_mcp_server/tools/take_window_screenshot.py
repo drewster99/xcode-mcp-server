@@ -7,12 +7,14 @@ import uuid
 import subprocess
 
 from xcode_mcp_server.server import mcp
+from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 from xcode_mcp_server.utils.screenshot import _get_all_windows
 
 
 @mcp.tool()
+@apply_config
 def take_window_screenshot(window_id_or_name: str) -> str:
     """
     Take a screenshot of a window by ID or name (case-insensitive substring match).
