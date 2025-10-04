@@ -38,7 +38,15 @@
       "Bash(cat:*)",
       "Read(//tmp/**)",
       "Bash(grep:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(for:*)",
+      "Bash(do)",
+      "Bash(if grep -q \"@mcp.tool()\" \"$file\")",
+      "Bash(then)",
+      "Bash(if ! grep -q \"@apply_config\" \"$file\")",
+      "Bash(echo \"$file\")",
+      "Bash(fi)",
+      "Bash(done)"
     ],
     "deny": []
   }
