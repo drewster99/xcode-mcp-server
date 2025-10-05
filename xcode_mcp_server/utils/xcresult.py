@@ -317,14 +317,24 @@ def _format_structured_logs(all_logs: list, xcresult_path: str,
 def extract_build_errors_and_warnings(build_log: str,
                                      include_warnings: Optional[bool] = None) -> str:
     """
-    Extract and format errors and warnings from a build log.
+    Extract and format errors and warnings from a build log using regex pattern matching.
+
+    Uses word-boundary regex patterns (\\berror\\s*: and \\bwarning\\s*:) to match compiler
+    errors and warnings while avoiding false positives from phrases like "error-free" or
+    "no errors detected".
+
+    Prioritizes errors over warnings: shows up to 25 lines total with errors first, then
+    warnings to fill remaining slots. Provides clear messaging about total counts and what
+    portion is being displayed (e.g., "Showing all 5 errors and first 10 of 20 warnings").
 
     Args:
         build_log: The raw build log output from Xcode
         include_warnings: Include warnings in output. If not provided, uses global setting.
+                         Note: Command-line flags override this parameter if set.
 
     Returns:
-        Formatted string with errors/warnings, limited to 25 lines
+        Formatted string with summary line and error/warning details, up to 25 lines total.
+        Errors are always shown first, followed by warnings if space permits.
     """
     # Determine whether to include warnings
     # Command-line flags override function parameter (user control > LLM control)
@@ -339,12 +349,16 @@ def extract_build_errors_and_warnings(build_log: str,
     error_lines = []
     warning_lines = []
 
+    # Pattern for compiler errors/warnings: matches "error:" or "warning:" at word boundaries
+    # This avoids false positives from phrases like "error-free" or "no errors"
+    error_pattern = re.compile(r'\berror\s*:', re.IGNORECASE)
+    warning_pattern = re.compile(r'\bwarning\s*:', re.IGNORECASE)
+
     # Single iteration through output lines
     for line in output_lines:
-        line_lower = line.lower()
-        if "error" in line_lower:
+        if error_pattern.search(line):
             error_lines.append(line)
-        elif show_warnings and "warning" in line_lower:
+        elif show_warnings and warning_pattern.search(line):
             warning_lines.append(line)
 
     # Store total counts
@@ -367,22 +381,26 @@ def extract_build_errors_and_warnings(build_log: str,
     # Build appropriate message based on what we found
     if error_lines and warning_lines:
         # Build detailed count message
-        count_msg = f"Build failed with {total_errors} error(s) and {total_warnings} warning(s)."
+        count_msg = f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''} and {total_warnings} warning{'s' if total_warnings != 1 else ''}."
         if total_errors + total_warnings > 25:
             if displayed_warnings == 0:
-                count_msg += f" Showing first {displayed_errors} errors."
+                # Showing only errors, warnings excluded
+                count_msg += f" Showing first {displayed_errors} of {total_errors} errors."
             else:
-                count_msg += f" Showing {displayed_errors} error(s) and first {displayed_warnings} warning(s)."
+                # Showing errors and warnings, but some may be truncated
+                error_part = f"all {displayed_errors} error{'s' if displayed_errors != 1 else ''}" if displayed_errors == total_errors else f"first {displayed_errors} of {total_errors} errors"
+                warning_part = f"first {displayed_warnings} of {total_warnings} warnings"
+                count_msg += f" Showing {error_part} and {warning_part}."
         return f"{count_msg}\n{important_list}"
     elif error_lines:
-        count_msg = f"Build failed with {total_errors} error(s)."
+        count_msg = f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}."
         if total_errors > 25:
-            count_msg += f" Showing first 25 errors."
+            count_msg += f" Showing first 25 of {total_errors} errors."
         return f"{count_msg}\n{important_list}"
     elif warning_lines:
-        count_msg = f"Build completed with {total_warnings} warning(s)."
+        count_msg = f"Build completed with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
         if total_warnings > 25:
-            count_msg += f" Showing first 25 warnings."
+            count_msg += f" Showing first 25 of {total_warnings} warnings."
         return f"{count_msg}\n{important_list}"
     else:
         return "Build failed (no specific errors or warnings found in output)"

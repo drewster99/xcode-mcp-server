@@ -23,7 +23,10 @@ def get_build_errors(project_path: str,
         include_warnings: Include warnings in output. If not provided, uses global setting.
 
     Returns:
-        A string containing the build errors/warnings or a message if there are none
+        A string containing the build errors/warnings or a message if there are none.
+        Output is filtered using regex patterns to match compiler errors/warnings and
+        limited to 25 lines total, with errors prioritized over warnings. Includes a
+        summary line indicating total counts and what portion is being displayed.
     """
     # Validate include_warnings parameter
     if include_warnings is not None and not isinstance(include_warnings, bool):

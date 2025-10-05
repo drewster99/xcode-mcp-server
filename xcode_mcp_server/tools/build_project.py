@@ -34,7 +34,10 @@ def build_project(project_path: str,
 
     Returns:
         On success, returns "Build succeeded with 0 errors."
-        On failure, returns the first (up to) 25 error/warning lines from the build log.
+        On failure, returns a summary line with total counts followed by up to 25 error/warning
+        lines from the build log. Errors are prioritized over warnings - errors are shown first,
+        then warnings fill remaining slots. The output includes clear messaging about what
+        portion of errors/warnings is being displayed.
     """
     # Validate include_warnings parameter
     if include_warnings is not None and not isinstance(include_warnings, bool):
