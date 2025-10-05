@@ -200,8 +200,7 @@ class FixedTests(XcodeMCPTestRunner):
 
         # Try to get runtime output (might not exist yet)
         result = self.run_mcp_tool("get_runtime_output",
-                                  project_path=str(xcodeproj_path),
-                                  max_lines=10)
+                                  project_path=str(xcodeproj_path))
 
         if result["success"]:
             output = result["result"]

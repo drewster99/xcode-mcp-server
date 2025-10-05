@@ -29,32 +29,27 @@ from xcode_mcp_server.utils.xcresult import (
 def run_project(project_path: str,
                wait_seconds: int,
                scheme: Optional[str] = None,
-               max_lines: int = 100,
-               regex_filter: Optional[str] = None) -> str:
+               regex_filter: Optional[str] = None,
+               max_lines: int = 20) -> str:
     """
-    Run the specified Xcode project or workspace and WAIT for completion.
-    If the project run has completed by the time `wait_seconds` have passed,
-    this function will return filtered runtime output.
+    Run the specified Xcode project or workspace and wait for completion.
+    Returns structured JSON with runtime output if the run completes within wait_seconds.
 
-    Alternatively, you can call this with `0` for `wait_seconds` and get the
-    filtered runtime output later by calling `get_runtime_output`.
+    Set wait_seconds to 0 to launch and return immediately, then use get_runtime_output to retrieve logs, which become available 2 seconds after execution terminates.
 
     Args:
-        project_path: Path to an Xcode project/workspace directory.
-        wait_seconds: Maximum number of seconds to wait for the run to complete. If given a value of zero (0), this function returns as soon as the project is launched.
+        project_path: Path to an Xcode project/workspace directory
+        wait_seconds: Maximum seconds to wait for completion. Set to 0 to launch and return immediately.
         scheme: Optional scheme to run. If not provided, uses the active scheme.
-        max_lines: Maximum number of console log lines to return. Defaults to 100.
-        regex_filter: Optional regex pattern to filter console output lines.
+        regex_filter: Optional regex pattern to find matching lines in the output
+        max_lines: Maximum number of matching lines to return (default 20)
 
     Returns:
-        Console output from the run, or status message if still running.
+        JSON string with structured console output, or status message if still running
     """
     # Validate other parameters
     if wait_seconds < 0:
         raise InvalidParameterError("wait_seconds must be non-negative")
-
-    if max_lines < 1:
-        raise InvalidParameterError("max_lines must be at least 1")
 
     # Validate and normalize path
     scheme_desc = scheme if scheme else "active scheme"
@@ -180,8 +175,8 @@ def run_project(project_path: str,
 
     print(f"Using xcresult: {xcresult_path}", file=sys.stderr)
 
-    # Extract console logs
-    success, console_output = extract_console_logs_from_xcresult(xcresult_path, max_lines, regex_filter)
+    # Extract console logs (returns JSON)
+    success, console_output = extract_console_logs_from_xcresult(xcresult_path, regex_filter, max_lines)
 
     if not success:
         show_error_notification("Failed to extract logs", f"Status: {final_status}")
@@ -191,12 +186,17 @@ def run_project(project_path: str,
         show_result_notification(f"Run completed: {final_status}")
         return f"Run completed with status: {final_status}. No console output found (or filtered out)."
 
-    # Show result notification
-    show_result_notification(f"Run completed: {final_status}")
+    # Show result notification with error count
+    import json
+    try:
+        output_data = json.loads(console_output)
+        summary = output_data.get("summary", {})
+        errors = summary.get("errors_and_faults", 0)
+        if errors > 0:
+            show_error_notification(f"Run completed: {final_status}", f"{errors} errors/faults")
+        else:
+            show_result_notification(f"Run completed: {final_status}")
+    except json.JSONDecodeError:
+        show_result_notification(f"Run completed: {final_status}")
 
-    output_summary = f"Run completed with status: {final_status}\n"
-    output_summary += f"Console output ({len(console_output.splitlines())} lines):\n"
-    output_summary += "=" * 60 + "\n"
-    output_summary += console_output
-
-    return output_summary
+    return console_output

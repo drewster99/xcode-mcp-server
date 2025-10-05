@@ -25,18 +25,18 @@ def set_build_warnings_enabled(enabled: bool, forced: bool = False):
 
 
 def extract_console_logs_from_xcresult(xcresult_path: str,
-                                      max_lines: int = 100,
-                                      regex_filter: Optional[str] = None) -> Tuple[bool, str]:
+                                      regex_filter: Optional[str] = None,
+                                      max_lines: int = 20) -> Tuple[bool, str]:
     """
-    Extract console logs from an xcresult file.
+    Extract console logs from xcresult bundle and return structured JSON.
 
     Args:
         xcresult_path: Path to the .xcresult file
-        max_lines: Maximum number of lines to return
-        regex_filter: Optional regex pattern to filter output lines
+        regex_filter: Optional regex pattern to find matching lines
+        max_lines: Maximum matching lines to return (default 20)
 
     Returns:
-        Tuple of (success, output_or_error_message)
+        Tuple of (success, json_output_or_error_message)
     """
     # The xcresult file may still be finalizing, so retry a few times
     max_retries = 7
@@ -79,34 +79,239 @@ def extract_console_logs_from_xcresult(xcresult_path: str,
     try:
         log_data = json.loads(result.stdout)
 
-        # Extract console content from items
-        console_lines = []
-        for item in log_data.get('items', []):
+        # Extract ALL log entries (no filtering at this stage)
+        all_logs = []
+        for idx, item in enumerate(log_data.get('items', []), start=1):
             content = item.get('content', '').strip()
-            if content:
-                # Apply regex filter if provided and not empty
-                if regex_filter and regex_filter.strip():
-                    try:
-                        if re.search(regex_filter, content):
-                            console_lines.append(content)
-                    except re.error as e:
-                        raise InvalidParameterError(f"Invalid regex pattern: {e}")
-                else:
-                    console_lines.append(content)
+            if not content:
+                continue
 
-        # Limit to max_lines (take the first N lines)
-        if len(console_lines) > max_lines:
-            console_lines = console_lines[:max_lines]
+            # Extract structured fields
+            log_entry = {
+                'line': idx,
+                'kind': item.get('kind', 'unknown'),
+                'content': content
+            }
 
-        if not console_lines:
-            return True, ""  # No output is not an error
+            # Add optional fields if present
+            log_data_obj = item.get('logData', {})
+            if log_data_obj:
+                if 'subsystem' in log_data_obj and log_data_obj['subsystem']:
+                    log_entry['subsystem'] = log_data_obj['subsystem']
+                if 'category' in log_data_obj and log_data_obj['category']:
+                    log_entry['category'] = log_data_obj['category']
 
-        return True, "\n".join(console_lines)
+            all_logs.append(log_entry)
+
+        if not all_logs:
+            return True, json.dumps({"summary": {"total_lines": 0}, "full_log_path": None})
+
+        # Format the output using helper function
+        output = _format_structured_logs(all_logs, xcresult_path, regex_filter, max_lines)
+        return True, output
 
     except json.JSONDecodeError as e:
         return False, f"Failed to parse console logs: {e}"
+    except InvalidParameterError:
+        raise
     except Exception as e:
         return False, f"Error processing console logs: {e}"
+
+
+def _format_structured_logs(all_logs: list, xcresult_path: str,
+                           regex_filter: Optional[str], max_lines: int) -> str:
+    """
+    Format structured logs into JSON with priority-based selection and write full unfiltered log file.
+
+    Strategy:
+    - Write ALL logs to unfiltered plaintext file
+    - First 2 errors/faults (3 lines before, 2 after each) - from unfiltered logs
+    - Last 3 errors/faults (5 lines before, 4 after each) - from unfiltered logs
+    - First 2 warnings (2 lines before, 1 after each) - from unfiltered logs
+    - Last 10 info/debug lines - from unfiltered logs
+    - If regex_filter: Up to max_lines matching lines
+
+    Args:
+        all_logs: Complete list of all log entries (unfiltered)
+        xcresult_path: Path to xcresult bundle (used for temp file naming)
+        regex_filter: Optional regex to find matching lines
+        max_lines: Maximum matching lines to include in response
+
+    Returns:
+        JSON string with formatted output including full_log_path
+    """
+    import hashlib
+
+    # Categorize logs by severity
+    errors_and_faults = []
+    warnings = []
+    others = []
+
+    for log in all_logs:
+        kind = log.get('kind', 'unknown')
+        if kind in ['error', 'fault', 'osLogDefaultErrorFault']:
+            errors_and_faults.append(log)
+        elif kind in ['warning']:
+            warnings.append(log)
+        else:
+            others.append(log)
+
+    # Write complete UNFILTERED plaintext log to temp file
+    log_dir = "/tmp/xcode-mcp-server/logs"
+    os.makedirs(log_dir, exist_ok=True)
+
+    xcresult_hash = hashlib.md5(xcresult_path.encode()).hexdigest()[:8]
+    temp_log_path = os.path.join(log_dir, f"runtime-{xcresult_hash}.log")
+
+    try:
+        with open(temp_log_path, 'w') as f:
+            for log in all_logs:
+                f.write(f"{log['content']}\n")
+    except Exception as e:
+        print(f"Warning: Failed to write full log to {temp_log_path}: {e}", file=sys.stderr)
+        temp_log_path = None
+
+    # Build summary
+    summary = {
+        "total_lines": len(all_logs),
+        "errors_and_faults": len(errors_and_faults),
+        "warnings": len(warnings),
+        "info_debug": len(others)
+    }
+
+    # Find matching lines if regex_filter is provided
+    matching_lines = []
+    total_matching = 0
+    if regex_filter and regex_filter.strip():
+        try:
+            for log in all_logs:
+                if re.search(regex_filter, log['content']):
+                    total_matching += 1
+                    if len(matching_lines) < max_lines:
+                        matching_lines.append({
+                            'line': log['line'],
+                            'content': log['content'],
+                            'kind': log['kind'],
+                            'subsystem': log.get('subsystem'),
+                            'category': log.get('category')
+                        })
+            summary['matching_lines'] = total_matching
+        except re.error as e:
+            raise InvalidParameterError(f"Invalid regex pattern: {e}")
+
+    # Helper function to get context lines from ALL logs (unfiltered)
+    def get_context(log_list, target_log, lines_before, lines_after):
+        """Get context lines around a target log entry."""
+        target_line = target_log['line']
+        context_before = []
+        context_after = []
+
+        for log in log_list:
+            line_num = log['line']
+            if target_line - lines_before <= line_num < target_line:
+                context_before.append({
+                    'line': line_num,
+                    'content': log['content']
+                })
+            elif target_line < line_num <= target_line + lines_after:
+                context_after.append({
+                    'line': line_num,
+                    'content': log['content']
+                })
+
+        return context_before, context_after
+
+    # Select errors/faults with context (from ALL unfiltered logs)
+    selected_errors = []
+    if errors_and_faults:
+        # First 2 errors (3 before, 2 after)
+        for err in errors_and_faults[:2]:
+            before, after = get_context(all_logs, err, 3, 2)
+            selected_errors.append({
+                'line': err['line'],
+                'content': err['content'],
+                'kind': err['kind'],
+                'subsystem': err.get('subsystem'),
+                'category': err.get('category'),
+                'context_before': before,
+                'context_after': after
+            })
+
+        # Last 3 errors (5 before, 4 after) - avoid duplicates if < 8 total
+        if len(errors_and_faults) > 5:
+            for err in errors_and_faults[-3:]:
+                before, after = get_context(all_logs, err, 5, 4)
+                selected_errors.append({
+                    'line': err['line'],
+                    'content': err['content'],
+                    'kind': err['kind'],
+                    'subsystem': err.get('subsystem'),
+                    'category': err.get('category'),
+                    'context_before': before,
+                    'context_after': after
+                })
+        elif len(errors_and_faults) > 2:
+            # If 3-5 total, just add the remaining ones with context
+            for err in errors_and_faults[2:]:
+                before, after = get_context(all_logs, err, 5, 4)
+                selected_errors.append({
+                    'line': err['line'],
+                    'content': err['content'],
+                    'kind': err['kind'],
+                    'subsystem': err.get('subsystem'),
+                    'category': err.get('category'),
+                    'context_before': before,
+                    'context_after': after
+                })
+
+    # Select warnings with context (from ALL unfiltered logs)
+    selected_warnings = []
+    for warn in warnings[:2]:
+        before, after = get_context(all_logs, warn, 2, 1)
+        selected_warnings.append({
+            'line': warn['line'],
+            'content': warn['content'],
+            'kind': warn['kind'],
+            'subsystem': warn.get('subsystem'),
+            'category': warn.get('category'),
+            'context_before': before,
+            'context_after': after
+        })
+
+    # Get last 10 info/debug lines (from ALL unfiltered logs)
+    trailing_info = []
+    for log in others[-10:]:
+        trailing_info.append({
+            'line': log['line'],
+            'content': log['content'],
+            'kind': log.get('kind', 'unknown')
+        })
+
+    # Build output
+    output = {
+        "full_log_path": temp_log_path,
+        "summary": summary
+    }
+
+    if selected_errors:
+        output["errors_and_faults"] = selected_errors
+        if len(errors_and_faults) > len(selected_errors):
+            output["errors_note"] = f"Showing {len(selected_errors)} of {len(errors_and_faults)} errors/faults (first 2 and last 3). Use Read tool with full_log_path for complete log."
+
+    if selected_warnings:
+        output["warnings"] = selected_warnings
+        if len(warnings) > len(selected_warnings):
+            output["warnings_note"] = f"Showing {len(selected_warnings)} of {len(warnings)} warnings (first 2). Use Read tool with full_log_path for complete log."
+
+    if matching_lines:
+        output["matching_lines"] = matching_lines
+        if len(matching_lines) < summary.get('matching_lines', 0):
+            output["matching_note"] = f"Showing first {len(matching_lines)} of {summary['matching_lines']} matching lines. Use Read tool with full_log_path and grep for more."
+
+    if trailing_info:
+        output["trailing_info"] = trailing_info
+
+    return json.dumps(output, indent=2)
 
 
 def extract_build_errors_and_warnings(build_log: str,

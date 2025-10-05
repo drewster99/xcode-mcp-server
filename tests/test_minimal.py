@@ -133,14 +133,6 @@ class MinimalTests(XcodeMCPTestRunner):
         assert "non-negative" in result.get("error", "") or "negative" in result.get("error", "")
         print("✓ Negative wait_seconds rejected")
 
-        # Test max_lines parameter
-        result = self.run_mcp_tool("get_runtime_output",
-                                  project_path=str(valid_project),
-                                  max_lines=0)  # Invalid max_lines
-        self.assert_failure(result)
-        assert "at least 1" in result.get("error", "")
-        print("✓ Invalid max_lines rejected")
-
         # Clean up
         shutil.rmtree(valid_project)
 
