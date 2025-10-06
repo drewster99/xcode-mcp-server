@@ -436,12 +436,12 @@ def apply_config(func):
         print(debug_msg.replace("\\n", "\n"), file=sys.stderr)
 
         # Show in AppleScript alert (temporary debugging)
-        try:
-            alert_script = f'display alert "apply_config Debug" message "{debug_msg}"'
-            # No timeout - let the user dismiss it when ready
-            subprocess.run(['osascript', '-e', alert_script], capture_output=True)
-        except:
-            pass  # Ignore alert errors
+        # try:
+        #     alert_script = f'display alert "apply_config Debug" message "{debug_msg}"'
+        #     # No timeout - let the user dismiss it when ready
+        #     subprocess.run(['osascript', '-e', alert_script], capture_output=True)
+        # except:
+        #     pass  # Ignore alert errors
 
         # Show notification if enabled
         if should_notify:
