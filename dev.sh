@@ -2,7 +2,12 @@
 
 # Development script for xcode-mcp-server
 # This script sets up the environment and runs the MCP inspector for testing
-
+#
+# To connect a specific release or beta to the MCP Inspector, do like this:
+# 
+#     npx @modelcontextprotocol/inspector uvx xcode-mcp-server==1.3.0b3
+#
+#
 set -e  # Exit on error
 
 echo "🔧 Starting xcode-mcp-server development environment..."

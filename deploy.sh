@@ -16,7 +16,7 @@
 #     - 1.2.3rc1 - release candidate 1
 #   
 #     To publish a beta:
-#     hatch version 1.2.3b1  # Set beta version
+#     python -m hatch version 1.2.3b1  # Set beta version
 #     python -m build
 #     python -m twine upload dist/*
 #   

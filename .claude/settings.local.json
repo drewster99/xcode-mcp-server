@@ -10,7 +10,17 @@
       "mcp__xcode-mcp-server__get_xcode_projects",
       "mcp__xcode-mcp-server__build_project",
       "Bash(git commit:*)",
-      "Read(//Users/andrew/Library/Developer/Xcode/DerivedData/MortgageCalcPro2-gdhvmifdyvqznscrgoskjlrgpjwo/Logs/Test/**)"
+      "Read(//Users/andrew/Library/Developer/Xcode/DerivedData/MortgageCalcPro2-gdhvmifdyvqznscrgoskjlrgpjwo/Logs/Test/**)",
+      "Bash(mdfind:*)",
+      "Bash(xcodebuild:*)",
+      "Bash(python:*)",
+      "Bash(git log:*)",
+      "mcp__xcode-mcp-server__version",
+      "Bash(mcp tool run:*)",
+      "Read(//Users/andrew/.claude/**)",
+      "Read(//Users/andrew/.xcode-mcp-server/**)",
+      "mcp__xcode-mcp-server__debug_list_notification_history",
+      "Bash(osascript:*)"
     ],
     "deny": [],
     "ask": []

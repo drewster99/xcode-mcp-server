@@ -79,9 +79,13 @@ def show_notification(title: str, subtitle: str = None, message: str = None, sou
         try:
             # Build AppleScript command - message is required by AppleScript
             msg = message or subtitle or title
-            script = f'display notification "{msg}" with title "{title}"'
+            escaped_msg = escape_applescript_string(msg)
+            escaped_title = escape_applescript_string(title)
+
+            script = f'display notification "{escaped_msg}" with title "{escaped_title}"'
             if subtitle:
-                script += f' subtitle "{subtitle}"'
+                escaped_subtitle = escape_applescript_string(subtitle)
+                script += f' subtitle "{escaped_subtitle}"'
             if sound:
                 script += ' sound name "Frog"'
 
