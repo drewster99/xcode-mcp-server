@@ -3,6 +3,35 @@
 # Deployment script for xcode-mcp-server
 # This script builds and publishes the package to PyPI
 
+# If you want to deploy a BETA, this script won't do it,
+# but you can do it manually:
+#
+#   You can use pre-release version numbers following
+#     https://peps.python.org/pep-0440/. PyPI will accept them, but pip won't
+#     install them by default.
+#   
+#     Pre-release version formats:
+#     - 1.2.3b1 - beta 1
+#     - 1.2.3a1 - alpha 1
+#     - 1.2.3rc1 - release candidate 1
+#   
+#     To publish a beta:
+#     hatch version 1.2.3b1  # Set beta version
+#     python -m build
+#     python -m twine upload dist/*
+#   
+#     Users can install it with:
+#     # Specific beta version (safest for testers)
+#     pip install xcode-mcp-server==1.2.3b1
+#     uvx xcode-mcp-server==1.2.3b1
+#   
+#     # Latest including pre-releases
+#     pip install --pre xcode-mcp-server
+#     uvx --with xcode-mcp-server --pre xcode-mcp-server
+#   
+#     Regular users doing pip install xcode-mcp-server will get the latest
+#     stable version and skip all pre-releases automatically.
+
 set -e  # Exit on error
 
 echo "🚀 Starting xcode-mcp-server deployment..."
