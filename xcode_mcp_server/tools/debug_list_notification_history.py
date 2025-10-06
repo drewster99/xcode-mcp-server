@@ -2,6 +2,8 @@
 """debug_list_notification_history tool - List all notifications that have been posted"""
 
 import subprocess
+import tempfile
+import os
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.utils.applescript import get_notification_history
@@ -36,14 +38,16 @@ def debug_list_notification_history() -> str:
 
         result = "\n".join(lines)
 
-    # Also show in an alert
+    # Also show in TextEdit (scrollable)
     try:
-        # Escape for AppleScript
-        alert_msg = result.replace('"', '\\"').replace('\n', '\\n')
-        alert_script = f'display alert "Notification History" message "{alert_msg}"'
-        # No timeout - let the user dismiss it when ready
-        subprocess.run(['osascript', '-e', alert_script], capture_output=True)
-    except:
-        pass  # Ignore alert errors
+        # Write to temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, prefix='xcode-mcp-notifications-') as f:
+            f.write(result)
+            temp_path = f.name
+
+        # Open in TextEdit
+        subprocess.run(['open', '-a', 'TextEdit', temp_path], capture_output=True)
+    except Exception as e:
+        pass  # Ignore display errors
 
     return result

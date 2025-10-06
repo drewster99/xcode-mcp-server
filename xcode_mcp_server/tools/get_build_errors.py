@@ -64,11 +64,18 @@ def get_build_errors(project_path: str,
 
         -- Try to get the last build log
         try
-            -- Get the most recent build action result
-            set lastBuildResult to last build action result of workspaceDoc
+            -- Get the most recent scheme action result
+            set lastBuildResult to last scheme action result of workspaceDoc
 
-            -- Get its build log
-            return build log of lastBuildResult
+            -- Check the build status
+            set buildStatus to status of lastBuildResult
+
+            -- Return status and log
+            if buildStatus is succeeded then
+                return "BUILD_SUCCEEDED"
+            else
+                return build log of lastBuildResult
+            end if
         on error
             -- No build has been performed yet
             return ""
@@ -81,6 +88,8 @@ def get_build_errors(project_path: str,
     if success:
         if output == "":
             return "No build has been performed yet for this project."
+        elif output == "BUILD_SUCCEEDED":
+            return "Build succeeded with 0 errors."
         else:
             # Use the shared helper to extract and format errors/warnings (returns JSON)
             return extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
