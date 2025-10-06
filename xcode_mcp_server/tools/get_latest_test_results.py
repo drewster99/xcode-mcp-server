@@ -2,9 +2,7 @@
 """get_latest_test_results tool - Get test results from last run"""
 
 import os
-import subprocess
 import json
-import datetime
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
@@ -16,7 +14,7 @@ from xcode_mcp_server.utils.applescript import (
     show_error_notification,
     show_warning_notification
 )
-from xcode_mcp_server.utils.xcresult import find_xcresult_bundle
+from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_results_from_xcresult
 
 
 @mcp.tool()
@@ -29,7 +27,13 @@ def get_latest_test_results(project_path: str) -> str:
         project_path: Path to Xcode project/workspace directory
 
     Returns:
-        Latest test results or "No test results available"
+        JSON with test results or plain text error message.
+        Success format:
+        {
+            "xcresult_path": "...",
+            "summary": {"total_tests": N, "passed": M, "failed": K, "skipped": L},
+            "failed_tests": [{"test_name": "...", "failure_message": "...", ...}]
+        }
     """
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "get_latest_test_results")
@@ -38,48 +42,24 @@ def get_latest_test_results(project_path: str) -> str:
     xcresult_path = find_xcresult_bundle(project_path)
 
     if xcresult_path and os.path.exists(xcresult_path):
-        # Extract test results from xcresult bundle
-        try:
-            # Get test summary
-            result = subprocess.run(
-                ['xcrun', 'xcresulttool', 'get', '--path', xcresult_path, '--format', 'json'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+        # Extract and parse test results
+        success, test_results = extract_test_results_from_xcresult(xcresult_path)
 
-            if result.returncode == 0:
-                try:
-                    data = json.loads(result.stdout)
+        if success:
+            # Parse JSON to show notification
+            try:
+                result_data = json.loads(test_results)
+                summary = result_data.get('summary', {})
+                failed = summary.get('failed', 0)
 
-                    # Parse the JSON to extract test information
-                    output_lines = ["Test Results from xcresult bundle:", ""]
+                if failed == 0:
+                    show_result_notification("All tests PASSED")
+                else:
+                    show_error_notification(f"{failed} test{'s' if failed != 1 else ''} FAILED")
+            except:
+                pass
 
-                    # Try to extract metrics
-                    failed_count = 0
-                    if 'metrics' in data:
-                        metrics = data['metrics']
-                        if 'testsCount' in metrics:
-                            output_lines.append(f"Total tests: {metrics.get('testsCount', {}).get('_value', 'N/A')}")
-                        if 'testsFailedCount' in metrics:
-                            failed_count = metrics.get('testsFailedCount', {}).get('_value', 0)
-                            output_lines.append(f"Failed tests: {failed_count}")
-
-                    # Get modification time of xcresult
-                    mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(xcresult_path))
-                    output_lines.append(f"Test run: {mod_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-                    # Show notification
-                    if failed_count == 0:
-                        show_result_notification("All tests PASSED")
-                    else:
-                        show_error_notification(f"{failed_count} test{'s' if failed_count != 1 else ''} FAILED")
-
-                    return '\n'.join(output_lines)
-                except:
-                    pass
-        except:
-            pass
+            return test_results
 
     # Fallback: Try to get from Xcode via AppleScript
     show_warning_notification("Using AppleScript fallback", "xcresult unavailable or parsing failed")

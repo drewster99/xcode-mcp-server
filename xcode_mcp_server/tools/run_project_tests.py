@@ -4,7 +4,6 @@
 import os
 import sys
 import time
-import subprocess
 import json
 from typing import Optional, List
 
@@ -20,7 +19,7 @@ from xcode_mcp_server.utils.applescript import (
     show_error_notification,
     show_warning_notification
 )
-from xcode_mcp_server.utils.xcresult import find_xcresult_bundle
+from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_results_from_xcresult
 
 
 # TODO: Implement selective test execution with xcodebuild
@@ -158,7 +157,14 @@ def run_project_tests(project_path: str,
                          Set to 0 to start tests and return immediately.
 
     Returns:
-        Test results if max_wait_seconds > 0, otherwise confirmation message
+        JSON with test results if tests complete, otherwise plain text status message.
+        Success format:
+        {
+            "xcresult_path": "...",
+            "summary": {"total_tests": N, "passed": M, "failed": K, "skipped": L},
+            "failed_tests": [{"test_name": "...", "failure_message": "...", ...}]
+        }
+        Timeout/background: Plain text message
     """
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
@@ -355,39 +361,27 @@ end tell
     if xcresult_path:
         print(f"DEBUG: Found xcresult bundle at {xcresult_path}", file=sys.stderr)
 
-        # Get the raw JSON from xcresulttool and return it
-        try:
-            result = subprocess.run(
-                ['xcrun', 'xcresulttool', 'get', 'test-results', 'tests', '--path', xcresult_path],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+        # Extract and parse test results
+        success, test_results = extract_test_results_from_xcresult(xcresult_path)
 
-            if result.returncode == 0:
-                # Parse to show notification
-                try:
-                    test_data = json.loads(result.stdout)
-                    # Count failures
-                    failure_count = 0
-                    if 'tests' in test_data and '_values' in test_data['tests']:
-                        for test in test_data['tests']['_values']:
-                            if test.get('testStatus', '') == 'Failure':
-                                failure_count += 1
+        if success:
+            # Parse JSON to show notification
+            try:
+                result_data = json.loads(test_results)
+                summary = result_data.get('summary', {})
+                failed = summary.get('failed', 0)
 
-                    if failure_count == 0:
-                        show_result_notification("All tests PASSED")
-                    else:
-                        show_error_notification(f"{failure_count} test{'s' if failure_count != 1 else ''} FAILED")
-                except:
-                    pass
+                if failed == 0:
+                    show_result_notification("All tests PASSED")
+                else:
+                    show_error_notification(f"{failed} test{'s' if failed != 1 else ''} FAILED")
+            except:
+                pass
 
-                # Return the raw JSON - let the LLM parse it
-                return result.stdout
-            else:
-                print(f"DEBUG: Failed to get xcresult data: {result.stderr}", file=sys.stderr)
-        except Exception as e:
-            print(f"DEBUG: Exception getting xcresult data: {e}", file=sys.stderr)
+            # Return the parsed JSON
+            return test_results
+        else:
+            print(f"DEBUG: Failed to parse xcresult data: {test_results}", file=sys.stderr)
 
     # Fallback if we couldn't get xcresult data
     print(f"DEBUG: No xcresult bundle found for {project_path}", file=sys.stderr)

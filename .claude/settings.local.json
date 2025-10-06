@@ -6,7 +6,11 @@
       "Bash(python3 -m pytest tests/ -v)",
       "Bash(python3:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$(cat <<''EOF''\nRefactor runtime log output to use structured JSON with intelligent filtering\n\nImproves LLM diagnostics by providing priority-based log filtering and complete context. Changes runtime output from plaintext to structured JSON that includes errors/warnings with unfiltered context, optional regex-matched lines, and a full unfiltered log file for deep analysis.\n\nKey improvements:\n- Errors and warnings never lost to filtering (always included with full context)\n- New matching_lines section shows regex matches up to configurable limit\n- Full unfiltered log written to /tmp/xcode-mcp-server/logs/ for reference\n- Reduces context usage while improving diagnostic quality\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+      "Bash(git commit -m \"$(cat <<''EOF''\nRefactor runtime log output to use structured JSON with intelligent filtering\n\nImproves LLM diagnostics by providing priority-based log filtering and complete context. Changes runtime output from plaintext to structured JSON that includes errors/warnings with unfiltered context, optional regex-matched lines, and a full unfiltered log file for deep analysis.\n\nKey improvements:\n- Errors and warnings never lost to filtering (always included with full context)\n- New matching_lines section shows regex matches up to configurable limit\n- Full unfiltered log written to /tmp/xcode-mcp-server/logs/ for reference\n- Reduces context usage while improving diagnostic quality\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "mcp__xcode-mcp-server__get_xcode_projects",
+      "mcp__xcode-mcp-server__build_project",
+      "Bash(git commit:*)",
+      "Read(//Users/andrew/Library/Developer/Xcode/DerivedData/MortgageCalcPro2-gdhvmifdyvqznscrgoskjlrgpjwo/Logs/Test/**)"
     ],
     "deny": [],
     "ask": []

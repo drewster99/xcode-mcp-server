@@ -612,3 +612,165 @@ def find_xcresult_bundle(project_path: str, wait_seconds: int = 10) -> Optional[
         print(f"Error searching for xcresult: {e}", file=sys.stderr)
 
     return None
+
+
+def extract_test_results_from_xcresult(xcresult_path: str) -> Tuple[bool, str]:
+    """
+    Extract and parse test results from xcresult bundle.
+
+    Args:
+        xcresult_path: Path to the .xcresult bundle
+
+    Returns:
+        Tuple of (success, json_output_or_error_message)
+        JSON format:
+        {
+            "xcresult_path": "...",
+            "summary": {
+                "total_tests": N,
+                "passed": M,
+                "failed": K,
+                "skipped": L
+            },
+            "failed_tests": [
+                {
+                    "test_name": "Bundle/Class/method",
+                    "duration": "0.5s",
+                    "failure_message": "...",
+                    "file": "...",
+                    "line": 42
+                }
+            ]
+        }
+    """
+    try:
+        # Extract test results from xcresult bundle
+        result = subprocess.run(
+            ['xcrun', 'xcresulttool', 'get', 'test-results', 'tests', '--path', xcresult_path],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+
+        if result.returncode != 0:
+            return False, f"Failed to extract test results: {result.stderr}"
+
+        # Parse the JSON
+        test_data = json.loads(result.stdout)
+
+    except subprocess.TimeoutExpired:
+        return False, "Timeout extracting test results"
+    except json.JSONDecodeError as e:
+        return False, f"Failed to parse test results JSON: {e}"
+    except Exception as e:
+        return False, f"Error extracting test results: {e}"
+
+    # Recursively walk the test tree to find all test cases
+    def walk_test_nodes(node, parent_path=""):
+        """Recursively walk test nodes and collect test case results."""
+        test_cases = []
+
+        node_type = node.get('nodeType', '')
+        node_name = node.get('name', '')
+
+        # Build the path for this node
+        if node_type in ['Unit test bundle', 'Test Suite']:
+            current_path = f"{parent_path}/{node_name}" if parent_path else node_name
+        else:
+            current_path = parent_path
+
+        # If this is a test case, record it
+        if node_type == 'Test Case':
+            test_info = {
+                'name': f"{current_path}/{node_name}",
+                'result': node.get('result', 'Unknown'),
+                'duration': node.get('duration', '0s')
+            }
+
+            # Extract failure details if test failed
+            if test_info['result'] in ['Failed', 'Failure']:
+                failures = []
+
+                # Get failure messages from the node
+                if 'failureMessages' in node:
+                    for failure in node['failureMessages']:
+                        failure_info = {
+                            'message': failure.get('message', 'Unknown failure')
+                        }
+
+                        # Extract file location if available
+                        if 'location' in failure:
+                            location = failure['location']
+                            if 'file' in location:
+                                failure_info['file'] = location['file']
+                            if 'line' in location:
+                                failure_info['line'] = location['line']
+
+                        failures.append(failure_info)
+
+                test_info['failures'] = failures
+
+            test_cases.append(test_info)
+
+        # Recursively process children
+        if 'children' in node:
+            for child in node['children']:
+                test_cases.extend(walk_test_nodes(child, current_path))
+
+        return test_cases
+
+    # Walk the test tree starting from testNodes
+    all_tests = []
+    for test_node in test_data.get('testNodes', []):
+        all_tests.extend(walk_test_nodes(test_node))
+
+    # Categorize tests
+    passed_tests = [t for t in all_tests if t['result'] in ['Passed', 'Success']]
+    failed_tests = [t for t in all_tests if t['result'] in ['Failed', 'Failure']]
+    skipped_tests = [t for t in all_tests if t['result'] in ['Skipped']]
+
+    # Build summary
+    summary = {
+        'total_tests': len(all_tests),
+        'passed': len(passed_tests),
+        'failed': len(failed_tests),
+        'skipped': len(skipped_tests)
+    }
+
+    # Format failed tests for output
+    failed_test_details = []
+    for test in failed_tests:
+        test_detail = {
+            'test_name': test['name'],
+            'duration': test['duration']
+        }
+
+        # Add failure details
+        if 'failures' in test and test['failures']:
+            # Combine all failure messages
+            messages = []
+            for failure in test['failures']:
+                messages.append(failure['message'])
+
+                # Add file/line info if available
+                if 'file' in failure:
+                    test_detail['file'] = failure['file']
+                if 'line' in failure:
+                    test_detail['line'] = failure['line']
+
+            test_detail['failure_message'] = '\n'.join(messages)
+        else:
+            test_detail['failure_message'] = 'Test failed (no failure message available)'
+
+        failed_test_details.append(test_detail)
+
+    # Build output JSON
+    output = {
+        'xcresult_path': xcresult_path,
+        'summary': summary
+    }
+
+    if failed_test_details:
+        output['failed_tests'] = failed_test_details
+
+    return True, json.dumps(output, indent=2)

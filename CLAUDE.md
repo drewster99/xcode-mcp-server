@@ -125,10 +125,12 @@ hatch version major  # Increment major version
 
 ### Internal Helper Functions
 - **`get_frontmost_project()`**: Not exposed as MCP tool; retrieves the currently open Xcode project path from frontmost window
-- **`extract_console_logs_from_xcresult()`**: Parses .xcresult bundles to extract runtime console output
-- **`extract_build_errors_and_warnings()`**: Filters build logs to show only errors/warnings (configurable via `include_warnings` parameter)
+- **`extract_console_logs_from_xcresult()`**: Parses .xcresult bundles to extract runtime console output as structured JSON
+- **`extract_build_errors_and_warnings()`**: Filters build logs to show only errors/warnings as structured JSON (configurable via `include_warnings` parameter)
+- **`extract_test_results_from_xcresult()`**: Parses .xcresult test bundles to extract concise test results with failure details
 - **`wait_for_xcresult_after_timestamp()`**: Polls for new .xcresult files after a run starts, with timeout
-- **`find_xcresult_for_project()`**: Locates the most recent .xcresult bundle for a project
+- **`find_xcresult_for_project()`**: Locates the most recent .xcresult bundle for a project (runtime logs)
+- **`find_xcresult_bundle()`**: Locates the most recent .xcresult bundle for a project (test logs)
 - **`validate_and_normalize_project_path()`**: Ensures paths are absolute, exist, and are allowed by security policy
 - **`escape_applescript_string()`**: Properly escapes strings for safe AppleScript execution
 
@@ -136,13 +138,17 @@ hatch version major  # Increment major version
 - **Scheme Selection**: When no scheme is specified in `build_project`, the active scheme is used automatically
 - **Debug Output**: Server prints debug information to stderr for troubleshooting
 - **Workspace Loading**: All operations wait for Xcode workspace to fully load before proceeding (60-second timeout)
-- **Build Log Filtering**: Build failures return only error lines (up to 25) from the full build log for clarity
+- **Build Log Filtering**: Build failures return structured JSON with errors/warnings (up to 25 lines) and full log path
+- **Test Result Filtering**: Test results return structured JSON with summary and only failed test details; passing tests are counted but not detailed
 - **Warning Control**: Global `BUILD_WARNINGS_ENABLED` and `BUILD_WARNINGS_FORCED` flags control warning display; can be overridden per-tool with `include_warnings` parameter
 - **Notifications**: Optional macOS notifications via `osascript` (controlled by `NOTIFICATIONS_ENABLED` global flag)
 
 ### xcresult Management
-The server relies heavily on Xcode's .xcresult bundles for extracting build and runtime information:
-- Located in `~/Library/Developer/Xcode/DerivedData/*/Logs/Test/`
-- Parsed using `xcrun xcresulttool get --format json`
+The server relies heavily on Xcode's .xcresult bundles for extracting build, runtime, and test information:
+- **Runtime logs**: Located in `~/Library/Developer/Xcode/DerivedData/*/Logs/Launch/`
+- **Test results**: Located in `~/Library/Developer/Xcode/DerivedData/*/Logs/Test/`
+- Parsed using `xcrun xcresulttool` with appropriate subcommands
 - Timestamped checking prevents reading stale results
-- Console logs extracted from `actionsInvocationRecord` → `actions` → `actionResult` → `logRef` paths
+- **Runtime output**: Console logs extracted from `actionsInvocationRecord` → `actions` → `actionResult` → `logRef` paths, returned as structured JSON with errors/warnings prioritized
+- **Test results**: Test tree parsed recursively to extract pass/fail counts and failure details, returned as concise structured JSON (10-50x smaller than raw xcresult output)
+- **Build errors**: Filtered using regex patterns, returned as structured JSON with full log path for deep analysis
