@@ -161,7 +161,7 @@ def _format_structured_logs(all_logs: list, xcresult_path: str,
     os.makedirs(log_dir, exist_ok=True)
 
     xcresult_hash = hashlib.md5(xcresult_path.encode()).hexdigest()[:8]
-    temp_log_path = os.path.join(log_dir, f"runtime-{xcresult_hash}.log")
+    temp_log_path = os.path.join(log_dir, f"runtime-{xcresult_hash}.txt")
 
     try:
         with open(temp_log_path, 'w') as f:
@@ -315,7 +315,9 @@ def _format_structured_logs(all_logs: list, xcresult_path: str,
 
 
 def extract_build_errors_and_warnings(build_log: str,
-                                     include_warnings: Optional[bool] = None) -> str:
+                                     include_warnings: Optional[bool] = None,
+                                     regex_filter: Optional[str] = None,
+                                     max_lines: int = 25) -> str:
     """
     Extract and format errors and warnings from a build log using regex pattern matching.
 
@@ -323,19 +325,35 @@ def extract_build_errors_and_warnings(build_log: str,
     errors and warnings while avoiding false positives from phrases like "error-free" or
     "no errors detected".
 
-    Prioritizes errors over warnings: shows up to 25 lines total with errors first, then
-    warnings to fill remaining slots. Provides clear messaging about total counts and what
-    portion is being displayed (e.g., "Showing all 5 errors and first 10 of 20 warnings").
+    Writes the complete unfiltered build log to /tmp/xcode-mcp-server/logs/build-{hash}.txt
+    for full analysis.
+
+    Prioritizes errors over warnings: shows up to max_lines total with errors first, then
+    warnings to fill remaining slots. Optional regex_filter can further filter the error/warning
+    lines before limiting.
 
     Args:
         build_log: The raw build log output from Xcode
         include_warnings: Include warnings in output. If not provided, uses global setting.
                          Note: Command-line flags override this parameter if set.
+        regex_filter: Optional regex to further filter error/warning lines
+        max_lines: Maximum number of error/warning lines to include (default 25)
 
     Returns:
-        Formatted string with summary line and error/warning details, up to 25 lines total.
-        Errors are always shown first, followed by warnings if space permits.
+        JSON string with format:
+        {
+            "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
+            "summary": {
+                "total_errors": N,
+                "total_warnings": M,
+                "showing_errors": X,
+                "showing_warnings": Y
+            },
+            "errors_and_warnings": "Build failed with N errors...\nerror: ...\n..."
+        }
     """
+    import hashlib
+
     # Determine whether to include warnings
     # Command-line flags override function parameter (user control > LLM control)
     if BUILD_WARNINGS_FORCED is not None:
@@ -344,6 +362,20 @@ def extract_build_errors_and_warnings(build_log: str,
     else:
         # No forcing, use function parameter or default
         show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
+
+    # Write complete UNFILTERED build log to temp file
+    log_dir = "/tmp/xcode-mcp-server/logs"
+    os.makedirs(log_dir, exist_ok=True)
+
+    build_hash = hashlib.md5(build_log.encode()).hexdigest()[:8]
+    temp_log_path = os.path.join(log_dir, f"build-{build_hash}.txt")
+
+    try:
+        with open(temp_log_path, 'w') as f:
+            f.write(build_log)
+    except Exception as e:
+        print(f"Warning: Failed to write full log to {temp_log_path}: {e}", file=sys.stderr)
+        temp_log_path = None
 
     output_lines = build_log.split("\n")
     error_lines = []
@@ -354,27 +386,36 @@ def extract_build_errors_and_warnings(build_log: str,
     error_pattern = re.compile(r'\berror\s*:', re.IGNORECASE)
     warning_pattern = re.compile(r'\bwarning\s*:', re.IGNORECASE)
 
-    # Single iteration through output lines
+    # Single iteration through output lines to extract errors/warnings
     for line in output_lines:
         if error_pattern.search(line):
             error_lines.append(line)
         elif show_warnings and warning_pattern.search(line):
             warning_lines.append(line)
 
-    # Store total counts
+    # Store total counts before filtering
     total_errors = len(error_lines)
     total_warnings = len(warning_lines)
+
+    # Apply regex filter if provided
+    if regex_filter and regex_filter.strip():
+        try:
+            filter_pattern = re.compile(regex_filter)
+            error_lines = [line for line in error_lines if filter_pattern.search(line)]
+            warning_lines = [line for line in warning_lines if filter_pattern.search(line)]
+        except re.error as e:
+            raise InvalidParameterError(f"Invalid regex pattern: {e}")
 
     # Combine errors first, then warnings
     important_lines = error_lines + warning_lines
 
     # Calculate what we're actually showing
-    displayed_errors = min(total_errors, 25)
-    displayed_warnings = 0 if total_errors >= 25 else min(total_warnings, 25 - total_errors)
+    displayed_errors = min(len(error_lines), max_lines)
+    displayed_warnings = 0 if len(error_lines) >= max_lines else min(len(warning_lines), max_lines - len(error_lines))
 
-    # Limit to first 25 important lines
-    if len(important_lines) > 25:
-        important_lines = important_lines[:25]
+    # Limit to max_lines
+    if len(important_lines) > max_lines:
+        important_lines = important_lines[:max_lines]
 
     important_list = "\n".join(important_lines)
 
@@ -382,28 +423,42 @@ def extract_build_errors_and_warnings(build_log: str,
     if error_lines and warning_lines:
         # Build detailed count message
         count_msg = f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''} and {total_warnings} warning{'s' if total_warnings != 1 else ''}."
-        if total_errors + total_warnings > 25:
+        if total_errors + total_warnings > max_lines:
             if displayed_warnings == 0:
                 # Showing only errors, warnings excluded
                 count_msg += f" Showing first {displayed_errors} of {total_errors} errors."
             else:
                 # Showing errors and warnings, but some may be truncated
-                error_part = f"all {displayed_errors} error{'s' if displayed_errors != 1 else ''}" if displayed_errors == total_errors else f"first {displayed_errors} of {total_errors} errors"
-                warning_part = f"first {displayed_warnings} of {total_warnings} warnings"
+                error_part = f"all {displayed_errors} error{'s' if displayed_errors != 1 else ''}" if displayed_errors == len(error_lines) else f"first {displayed_errors} of {len(error_lines)} errors"
+                warning_part = f"first {displayed_warnings} of {len(warning_lines)} warnings"
                 count_msg += f" Showing {error_part} and {warning_part}."
-        return f"{count_msg}\n{important_list}"
+        output_text = f"{count_msg}\n{important_list}"
     elif error_lines:
         count_msg = f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}."
-        if total_errors > 25:
-            count_msg += f" Showing first 25 of {total_errors} errors."
-        return f"{count_msg}\n{important_list}"
+        if len(error_lines) > max_lines:
+            count_msg += f" Showing first {max_lines} of {total_errors} errors."
+        output_text = f"{count_msg}\n{important_list}"
     elif warning_lines:
         count_msg = f"Build completed with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
-        if total_warnings > 25:
-            count_msg += f" Showing first 25 of {total_warnings} warnings."
-        return f"{count_msg}\n{important_list}"
+        if len(warning_lines) > max_lines:
+            count_msg += f" Showing first {max_lines} of {total_warnings} warnings."
+        output_text = f"{count_msg}\n{important_list}"
     else:
-        return "Build failed (no specific errors or warnings found in output)"
+        output_text = "Build failed (no specific errors or warnings found in output)"
+
+    # Build JSON output
+    result = {
+        "full_log_path": temp_log_path,
+        "summary": {
+            "total_errors": total_errors,
+            "total_warnings": total_warnings,
+            "showing_errors": displayed_errors,
+            "showing_warnings": displayed_warnings
+        },
+        "errors_and_warnings": output_text
+    }
+
+    return json.dumps(result, indent=2)
 
 
 def find_xcresult_for_project(project_path: str) -> Optional[str]:

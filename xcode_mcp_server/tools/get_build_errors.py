@@ -14,19 +14,27 @@ from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
 @mcp.tool()
 @apply_config
 def get_build_errors(project_path: str,
-                    include_warnings: Optional[bool] = None) -> str:
+                    include_warnings: Optional[bool] = None,
+                    regex_filter: Optional[str] = None,
+                    max_lines: int = 25) -> str:
     """
     Get the build errors from the last build for the specified Xcode project or workspace.
 
     Args:
         project_path: Path to an Xcode project or workspace directory.
         include_warnings: Include warnings in output. If not provided, uses global setting.
+        regex_filter: Optional regex to filter error/warning lines
+        max_lines: Maximum number of error/warning lines to show (default 25)
 
     Returns:
-        A string containing the build errors/warnings or a message if there are none.
-        Output is filtered using regex patterns to match compiler errors/warnings and
-        limited to 25 lines total, with errors prioritized over warnings. Includes a
-        summary line indicating total counts and what portion is being displayed.
+        JSON string with format:
+        {
+            "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
+            "summary": {"total_errors": N, "total_warnings": M, "showing_errors": X, "showing_warnings": Y},
+            "errors_and_warnings": "Build failed with N errors...\nerror: ...\n..."
+        }
+        Output is filtered using regex patterns to match compiler errors/warnings, with errors
+        prioritized over warnings. Includes full unfiltered log file for complete analysis.
     """
     # Validate include_warnings parameter
     if include_warnings is not None and not isinstance(include_warnings, bool):
@@ -74,7 +82,7 @@ def get_build_errors(project_path: str,
         if output == "":
             return "No build has been performed yet for this project."
         else:
-            # Use the shared helper to extract and format errors/warnings
-            return extract_build_errors_and_warnings(output, include_warnings)
+            # Use the shared helper to extract and format errors/warnings (returns JSON)
+            return extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
     else:
         raise XCodeMCPError(f"Failed to retrieve build errors: {output}")
