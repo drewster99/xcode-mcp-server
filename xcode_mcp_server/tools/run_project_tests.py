@@ -145,16 +145,16 @@ from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_r
 @mcp.tool()
 @apply_config
 def run_project_tests(project_path: str,
-                     scheme: Optional[str] = None,
-                     max_wait_seconds: int = 300) -> str:
+                     scheme: Optional[str] = None) -> str:
     """
     Run tests for the specified Xcode project or workspace.
+
+    Tests will run for up to 10 minutes before timing out. This timeout is hardcoded
+    to prevent issues with test runs hanging indefinitely.
 
     Args:
         project_path: Path to Xcode project/workspace directory
         scheme: Optional scheme to test (uses active scheme if not specified)
-        max_wait_seconds: Maximum seconds to wait for completion (default 300).
-                         Set to 0 to start tests and return immediately.
 
     Returns:
         JSON with test results if tests complete, otherwise plain text status message.
@@ -164,20 +164,13 @@ def run_project_tests(project_path: str,
             "summary": {"total_tests": N, "passed": M, "failed": K, "skipped": L},
             "failed_tests": [{"test_name": "...", "failure_message": "...", ...}]
         }
-        Timeout/background: Plain text message
+        Timeout: Plain text message indicating timeout
     """
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
 
-    # Validate wait time
-    if max_wait_seconds < 0:
-        raise InvalidParameterError("max_wait_seconds must be >= 0")
-
-    # Show notification based on whether running in background or waiting
-    if max_wait_seconds == 0:
-        show_notification("Drew's Xcode MCP", subtitle=os.path.basename(project_path), message="Starting tests in background")
-    else:
-        show_notification("Drew's Xcode MCP", subtitle=os.path.basename(project_path), message="Running tests")
+    # Show notification
+    show_notification("Drew's Xcode MCP", subtitle=os.path.basename(project_path), message="Running tests")
 
     # TODO: Selective test execution - commented out until we can get active run destination
     # # Handle various forms of empty/invalid tests_to_run parameter
@@ -202,10 +195,9 @@ def run_project_tests(project_path: str,
     escaped_path = escape_applescript_string(project_path)
     test_command = 'test workspaceDoc'
 
-    # Build the script differently based on max_wait_seconds
-    if max_wait_seconds > 0:
-        wait_section = f'''set waitTime to 0
-    repeat while waitTime < {max_wait_seconds}
+    # Build the wait section with 10 minute (600 second) timeout
+    wait_section = f'''set waitTime to 0
+    repeat while waitTime < 600
         if completed of testResult is true then
             exit repeat
         end if
@@ -278,8 +270,6 @@ def run_project_tests(project_path: str,
            "FailureCount: " & (failureCount as string) & "\\n" & ¬
            "Failures:\\n" & failureMessages & "\\n" & ¬
            "---LOG---\\n" & buildLog'''
-    else:
-        wait_section = 'return "Tests started successfully"'
 
     script = f'''
 set projectPath to "{escaped_path}"
@@ -315,7 +305,7 @@ tell application "Xcode"
     -- Start the test
     set testResult to {test_command}
 
-    {'-- Wait for completion' if max_wait_seconds > 0 else '-- Return immediately'}
+    -- Wait for completion (up to 10 minutes)
     {wait_section}
 end tell
     '''
@@ -325,9 +315,6 @@ end tell
     if not success:
         show_error_notification("Failed to run tests", os.path.basename(project_path))
         return f"Failed to run tests: {output}"
-
-    if max_wait_seconds == 0:
-        return "✅ Tests started in background. Use get_latest_test_results to check results later."
 
     # Debug: Log raw output to see what we're getting
     if os.environ.get('XCODE_MCP_DEBUG'):
@@ -348,9 +335,9 @@ end tell
     output_lines = []
 
     if not completed:
-        output_lines.append(f"⏳ Tests did not complete within {max_wait_seconds} seconds")
+        output_lines.append(f"⏳ Tests did not complete within 10 minutes")
         output_lines.append(f"Status: {status}")
-        show_warning_notification(f"Tests timeout ({max_wait_seconds}s)")
+        show_warning_notification(f"Tests timeout (10 min)")
         return '\n'.join(output_lines)
 
     # If tests completed, get detailed results from xcresult

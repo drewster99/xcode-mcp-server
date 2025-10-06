@@ -29,6 +29,9 @@ def build_project(project_path: str,
     """
     Build the specified Xcode project or workspace.
 
+    Builds will run for up to 10 minutes before timing out. This timeout is hardcoded
+    to prevent issues with builds hanging indefinitely.
+
     Args:
         project_path: Path to an Xcode project or workspace directory.
         scheme: Name of the scheme to build. If not provided, uses the active scheme.
@@ -91,10 +94,15 @@ tell application "Xcode"
         -- 5. Build
         set actionResult to build workspaceDoc
 
-        -- 6. Wait for completion
+        -- 6. Wait for completion (with 10 minute timeout)
+        set buildWaitTime to 0
         repeat
                 if completed of actionResult is true then exit repeat
+                if buildWaitTime >= 600 then
+                        error "Build timed out after 10 minutes"
+                end if
                 delay 0.5
+                set buildWaitTime to buildWaitTime + 0.5
         end repeat
 
         -- 7. Check result
@@ -131,10 +139,15 @@ tell application "Xcode"
         -- 4. Build with current active scheme
         set actionResult to build workspaceDoc
 
-        -- 5. Wait for completion
+        -- 5. Wait for completion (with 10 minute timeout)
+        set buildWaitTime to 0
         repeat
                 if completed of actionResult is true then exit repeat
+                if buildWaitTime >= 600 then
+                        error "Build timed out after 10 minutes"
+                end if
                 delay 0.5
+                set buildWaitTime to buildWaitTime + 0.5
         end repeat
 
         -- 6. Check result

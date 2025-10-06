@@ -7,7 +7,9 @@ from . import get_directory_tree
 from . import get_directory_listing
 from . import get_project_schemes
 from . import build_project
-from . import run_project
+from . import run_project_with_user_interaction
+from . import run_project_until_terminated
+from . import run_project_unmonitored
 from . import get_build_errors
 from . import clean_project
 from . import stop_project

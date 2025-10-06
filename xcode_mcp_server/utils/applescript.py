@@ -2,6 +2,7 @@
 """AppleScript execution and notification utilities"""
 
 import subprocess
+import sys
 import datetime
 from typing import Tuple, List, Dict
 
@@ -107,3 +108,40 @@ def show_access_denied_notification(message: str, details: str = None):
 def show_result_notification(message: str, details: str = None):
     """Show a result notification"""
     show_notification("Drew's Xcode MCP", subtitle=details, message=message)
+
+
+def show_persistent_alert(title: str, message: str, button_text: str = "OK") -> subprocess.Popen:
+    """
+    Show a persistent macOS alert dialog that stays on screen until dismissed.
+
+    Returns a Popen object representing the background process. The process will
+    exit when the user clicks the button, allowing you to detect dismissal.
+
+    Args:
+        title: Alert dialog title
+        message: Alert dialog message body
+        button_text: Text for the button (default "OK")
+
+    Returns:
+        subprocess.Popen object for the alert process (None if notifications disabled)
+    """
+    if NOTIFICATIONS_ENABLED:
+        try:
+            # Escape strings for AppleScript
+            escaped_title = escape_applescript_string(title)
+            escaped_message = escape_applescript_string(message)
+            escaped_button = escape_applescript_string(button_text)
+
+            # Build AppleScript for alert dialog
+            script = f'display dialog "{escaped_message}" with title "{escaped_title}" buttons {{"{escaped_button}"}} default button "{escaped_button}" with icon caution'
+
+            # Run in background (non-blocking) and return the process
+            return subprocess.Popen(
+                ['osascript', '-e', script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        except Exception as e:
+            print(f"Warning: Failed to show alert: {e}", file=sys.stderr)
+            return None
+    return None
