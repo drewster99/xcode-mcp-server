@@ -61,7 +61,7 @@ def build_project(project_path: str,
     # Show building notification
     project_name = os.path.basename(normalized_path)
     scheme_name = scheme if scheme else "active scheme"
-    show_notification("Drew's Xcode MCP", subtitle=scheme_name, message=f"Building {project_name}")
+    show_notification("Drew's Xcode MCP", subtitle=project_name, message=f"Building {scheme_name}")
 
     # Build the AppleScript
     if scheme:
@@ -164,7 +164,7 @@ end tell
 
     if success:
         if output == "Build succeeded.":
-            show_result_notification(f"Build succeeded", project_name)
+            show_result_notification(f"✅ Build succeeded", project_name)
             return "Build succeeded with 0 errors.\n\nUse `run_project` to launch the app, or `run_project_tests` to run tests."
         else:
             # Use the shared helper to extract and format errors/warnings (returns JSON)
@@ -180,15 +180,15 @@ end tell
 
                 if total_errors == 0 and total_warnings > 0:
                     # Warnings only - build succeeded
-                    show_warning_notification(f"Build succeeded with warnings", f"{total_warnings} warning{'s' if total_warnings != 1 else ''}")
+                    show_warning_notification(f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}", project_name)
                 elif total_errors > 0:
                     # Has errors - build failed
-                    show_error_notification(f"Build failed", f"{total_errors} error{'s' if total_errors != 1 else ''}")
+                    show_error_notification(f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}", project_name)
             except json.JSONDecodeError:
                 # Fallback if JSON parsing fails
-                show_error_notification("Build failed")
+                show_error_notification("Build failed", project_name)
 
             return errors_output
     else:
-        show_error_notification("Build failed to start")
+        show_error_notification("Build failed to start", project_name)
         raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")
