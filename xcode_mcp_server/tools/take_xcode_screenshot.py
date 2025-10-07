@@ -5,6 +5,7 @@ import os
 import sys
 import re
 import time
+import uuid
 import subprocess
 
 from xcode_mcp_server.server import mcp
@@ -80,10 +81,9 @@ def take_xcode_screenshot(project_path: str) -> str:
         screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
         os.makedirs(screenshot_dir, exist_ok=True)
 
-        # Generate filename with timestamp
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', workspace_name)
-        filename = f"xcode_{safe_name}_{timestamp}.png"
+        # Generate filename with UUID
+        unique_id = uuid.uuid4()
+        filename = f"xcode_{unique_id}.png"
         screenshot_path = os.path.join(screenshot_dir, filename)
 
         print(f"Taking screenshot of Xcode window for '{workspace_name}'", file=sys.stderr)
@@ -107,7 +107,7 @@ def take_xcode_screenshot(project_path: str) -> str:
             raise XCodeMCPError("Screenshot file was not created")
 
         print(f"Screenshot saved to: {screenshot_path}", file=sys.stderr)
-        show_result_notification(f"SCREENSHOT - Xcode ({workspace_name})")
+        show_result_notification(f"Screenshotting Xcode {workspace_name}")
         return screenshot_path
 
     except subprocess.TimeoutExpired:

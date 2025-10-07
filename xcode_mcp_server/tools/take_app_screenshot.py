@@ -78,19 +78,15 @@ def take_app_screenshot(app_name: str) -> str:
 
         # Take screenshots
         screenshot_paths = []
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
 
         # Create screenshot directory
         screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
         os.makedirs(screenshot_dir, exist_ok=True)
 
         for window in windows:
-            # Sanitize names for filename
-            safe_title = "".join(c for c in window['title'] if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
-            safe_app = "".join(c for c in app_matched if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
-            unique_id = uuid.uuid4().hex[:8]
-
-            filename = f"app_{safe_app}_window_{window['id']}_{safe_title}_{timestamp}_{unique_id}.png"
+            # Generate filename with UUID
+            unique_id = uuid.uuid4()
+            filename = f"app_{unique_id}.png"
             screenshot_path = os.path.join(screenshot_dir, filename)
 
             # Take the screenshot using screencapture (-x flag disables sound)
@@ -114,7 +110,7 @@ def take_app_screenshot(app_name: str) -> str:
             screenshot_paths.append(screenshot_path)
 
         # Show success notification
-        show_result_notification(f"SCREENSHOT - {app_matched}")
+        show_result_notification(f'Screenshotting "{app_matched}"')
 
         return "\n".join(screenshot_paths)
 

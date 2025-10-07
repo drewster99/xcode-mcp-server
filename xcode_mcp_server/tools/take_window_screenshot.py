@@ -65,19 +65,15 @@ def take_window_screenshot(window_id_or_name: str) -> str:
 
         # Take screenshots
         screenshot_paths = []
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
 
         # Create screenshot directory
         screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
         os.makedirs(screenshot_dir, exist_ok=True)
 
         for window_id, window_title, app_name in matches:
-            # Sanitize window title for filename
-            safe_title = "".join(c for c in window_title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:50]
-            safe_app = "".join(c for c in app_name if c.isalnum() or c in (' ', '-', '_')).rstrip()[:30]
-            unique_id = uuid.uuid4().hex[:8]
-
-            filename = f"window_{window_id}_{safe_app}_{safe_title}_{timestamp}_{unique_id}.png"
+            # Generate filename with UUID
+            unique_id = uuid.uuid4()
+            filename = f"window_{unique_id}.png"
             screenshot_path = os.path.join(screenshot_dir, filename)
 
             # Take the screenshot using screencapture (-x flag disables sound)
@@ -103,9 +99,9 @@ def take_window_screenshot(window_id_or_name: str) -> str:
         # Show success notification
         if len(matches) == 1:
             window_title = matches[0][1]
-            show_result_notification(f"SCREENSHOT - {window_title}")
+            show_result_notification(f'Screenshotting "{window_title}"')
         else:
-            show_result_notification(f"SCREENSHOT - {len(matches)} windows")
+            show_result_notification(f"Screenshotting {len(matches)} windows")
 
         return "\n".join(screenshot_paths)
 
