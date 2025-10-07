@@ -145,10 +145,6 @@ echo "Test the deployed beta version with:"
 echo ""
 echo "    uvx xcode-mcp-server==$NEW_VERSION"
 echo ""
-echo "Or install latest pre-release:"
-echo ""
-echo "    uvx --with xcode-mcp-server --pre xcode-mcp-server"
-echo ""
 
 # Optional: Update Claude Code MCP server
 read -p "Update Claude Code to use this beta version? (y/n): " -r
@@ -162,7 +158,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
 
     # Add new beta version
     echo "Adding xcode-mcp-server $NEW_VERSION..."
-    claude mcp add xcode-mcp-server "uvx xcode-mcp-server==$NEW_VERSION"
+    claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx`  "xcode-mcp-server==$NEW_VERSION"
 
     echo ""
     echo "✅ Claude Code updated! Restart Claude Code for changes to take effect."

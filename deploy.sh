@@ -25,10 +25,6 @@
 #     pip install xcode-mcp-server==1.2.3b1
 #     uvx xcode-mcp-server==1.2.3b1
 #   
-#     # Latest including pre-releases
-#     pip install --pre xcode-mcp-server
-#     uvx --with xcode-mcp-server --pre xcode-mcp-server
-#   
 #     Regular users doing pip install xcode-mcp-server will get the latest
 #     stable version and skip all pre-releases automatically.
 

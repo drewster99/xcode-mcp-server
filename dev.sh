@@ -75,5 +75,10 @@ echo ""
 echo "   Press Ctrl+C to stop"
 echo ""
 
+#
+echo "If you need to run the inspector to a published PyPi beta:"
+echo "   npx @modelcontextprotocol/inspector uvx xcode-mcp-server==1.3.0b3   <-- beta version"
+echo ""
+
 # Run the MCP inspector
 npx @modelcontextprotocol/inspector python -m xcode_mcp_server
