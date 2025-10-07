@@ -36,20 +36,26 @@ Security requirements:
 
 ## Setup
 
+First, ensure `uv` is installed (required for all methods below):
+```bash
+which uv || brew install uv
+```
+
 ### 1. Claude Code (Recommended)
 
 ```bash
-claude mcp add --scope user --transport stdio `which uvx` xcode-mcp-server
+claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx` xcode-mcp-server
+```
+
+To run a specific version, use:
+```bash
+# Example: How to run v1.3.0b6
+claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx` xcode-mcp-server==1.3.0b6
 ```
 
 That's it! Claude Code handles the rest automatically.
 
 ### 2. Claude Desktop
-
-Install `uv` via Homebrew (if not already installed):
-```bash
-brew install uv
-```
 
 Edit your Claude Desktop config file (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -78,22 +84,6 @@ If you'd like to allow only certain projects or folders to be accessible by xcod
             ],
             "env": {
                 "XCODEMCP_ALLOWED_FOLDERS": "/Users/andrew/my_project:/Users/andrew/Documents/source"
-            }
-        }
-    }
-}
-```
-
-**Optional:** Restrict access to specific folders by adding an `env` section:
-
-```json
-{
-    "mcpServers": {
-        "xcode-mcp-server": {
-            "command": "uvx",
-            "args": ["xcode-mcp-server"],
-            "env": {
-                "XCODEMCP_ALLOWED_FOLDERS": "/Users/you/Projects:/Users/you/Work"
             }
         }
     }
