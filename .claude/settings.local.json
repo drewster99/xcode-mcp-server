@@ -20,7 +20,8 @@
       "Read(//Users/andrew/.claude/**)",
       "Read(//Users/andrew/.xcode-mcp-server/**)",
       "mcp__xcode-mcp-server__debug_list_notification_history",
-      "Bash(osascript:*)"
+      "Bash(osascript:*)",
+      "mcp__xcode-mcp-server__get_directory_listing"
     ],
     "deny": [],
     "ask": []
