@@ -75,23 +75,46 @@ def show_notification(title: str, subtitle: str = None, message: str = None, sou
         'sound': str(sound)
     })
 
-    if NOTIFICATIONS_ENABLED:
-        try:
-            # Build AppleScript command - message is required by AppleScript
-            msg = message or subtitle or title
-            escaped_msg = escape_applescript_string(msg)
-            escaped_title = escape_applescript_string(title)
+    # Check global setting first
+    if not NOTIFICATIONS_ENABLED:
+        return
 
-            script = f'display notification "{escaped_msg}" with title "{escaped_title}"'
-            if subtitle:
-                escaped_subtitle = escape_applescript_string(subtitle)
-                script += f' subtitle "{escaped_subtitle}"'
-            if sound:
-                script += ' sound name "Frog"'
+    # Check if we're in a tool context and if that tool has notifications disabled
+    try:
+        from xcode_mcp_server.config_manager import get_active_tool_context, ConfigManager
 
-            subprocess.run(['osascript', '-e', script], capture_output=True)
-        except:
-            pass  # Ignore notification errors
+        context = get_active_tool_context()
+        if context:
+            # We're in a tool execution context
+            tool_name = context.get('tool_name')
+            project_path = context.get('project_path')
+
+            if tool_name:
+                config = ConfigManager()
+                # Check if this specific tool should show notifications
+                if not config.should_show_notification(tool_name, project_path):
+                    return
+    except ImportError:
+        # If we can't import, just use global setting
+        pass
+
+    # Show the notification
+    try:
+        # Build AppleScript command - message is required by AppleScript
+        msg = message or subtitle or title
+        escaped_msg = escape_applescript_string(msg)
+        escaped_title = escape_applescript_string(title)
+
+        script = f'display notification "{escaped_msg}" with title "{escaped_title}"'
+        if subtitle:
+            escaped_subtitle = escape_applescript_string(subtitle)
+            script += f' subtitle "{escaped_subtitle}"'
+        if sound:
+            script += ' sound name "Frog"'
+
+        subprocess.run(['osascript', '-e', script], capture_output=True)
+    except:
+        pass  # Ignore notification errors
 
 
 def show_error_notification(message: str, details: str = None):

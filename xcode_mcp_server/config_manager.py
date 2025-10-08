@@ -8,6 +8,15 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Any, Dict, List, Set
 from functools import wraps
+from contextvars import ContextVar
+
+# Global context for tracking active MCP tool execution
+# This allows nested functions to know which tool is running
+_tool_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar('tool_context', default=None)
+
+def get_active_tool_context() -> Optional[Dict[str, Any]]:
+    """Get the current tool execution context if any"""
+    return _tool_context.get()
 
 
 @dataclass
@@ -443,13 +452,27 @@ def apply_config(func):
         # except:
         #     pass  # Ignore alert errors
 
-        # Show notification if enabled
-        if should_notify:
-            # Import here to avoid circular dependency
-            from xcode_mcp_server.utils.applescript import show_notification
-            show_notification("Drew's Xcode MCP", message=func.__name__)
+        # Set tool context for this execution
+        context = {
+            'tool_name': func.__name__,
+            'project_path': project_path,
+            'bound_arguments': bound.arguments
+        }
+        token = _tool_context.set(context)
 
-        # Call with modified parameters
-        return func(*bound.args, **bound.kwargs)
+        try:
+            # Show notification if enabled (with apply_config marker)
+            if should_notify:
+                # Import here to avoid circular dependency
+                from xcode_mcp_server.utils.applescript import show_notification
+                show_notification("Drew's Xcode MCP",
+                                subtitle="[apply_config]",
+                                message=func.__name__)
+
+            # Call with modified parameters
+            return func(*bound.args, **bound.kwargs)
+        finally:
+            # Always restore previous context
+            _tool_context.reset(token)
 
     return wrapper
