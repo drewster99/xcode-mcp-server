@@ -70,16 +70,17 @@ XCODEMCP_ALLOWED_FOLDERS=/path/to/projects uvx xcode-mcp-server
    - Manages allowed folder configuration from environment and CLI args
    - Validates security settings before server startup
 
-2. **MCP Server Implementation** (`xcode_mcp_server/__main__.py`)
+2. **MCP Server Implementation** (`xcode_mcp_server/server.py` and `xcode_mcp_server/tools/`)
    - Built with FastMCP framework
-   - Implements 20 MCP tools for Xcode interaction:
+   - Implements 24 MCP tools for Xcode interaction:
      - **Project discovery**: `version`, `get_xcode_projects`
      - **File system**: `get_directory_tree`, `get_directory_listing`
      - **Build operations**: `get_project_schemes`, `build_project`, `clean_project`, `stop_project`, `get_build_errors`
-     - **Runtime**: `run_project`, `get_runtime_output`
+     - **Runtime**: `run_project_with_user_interaction`, `run_project_until_terminated`, `run_project_unmonitored`, `get_runtime_output`
      - **Testing**: `list_project_tests`, `run_project_tests`, `get_latest_test_results`
      - **Screenshots**: `take_xcode_screenshot`, `take_simulator_screenshot`, `take_window_screenshot`, `take_app_screenshot`
      - **System info**: `list_booted_simulators`, `list_running_mac_apps`, `list_mac_app_windows`
+     - **Debug**: `debug_list_notification_history`
 
 ### Security Model
 
