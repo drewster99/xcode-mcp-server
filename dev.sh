@@ -79,6 +79,14 @@ echo ""
 echo "If you need to run the inspector to a published PyPi beta:"
 echo "   npx @modelcontextprotocol/inspector uvx xcode-mcp-server==1.3.0b3   <-- beta version"
 echo ""
+echo ""
+echo "If you need to test with Claude, do this:"
+echo "   claude mcp remove xcode-mcp-server"
+echo "   claude mcp add --transport stdio --scope user xcode-mcp-server -- python3 -m `pwd`/xcode_mcp_server"
+echo ""
+echo "  or maybe..."
+echo "   claude mcp add --transport stdio --scope user xcode-cp-server -- /opt/homebrew/Caskroom/miniconda/base/envs/xcode-mcp-dev/bin/python -m xcode_mcp_server
+echo ""
 
 # Run the MCP inspector
 npx @modelcontextprotocol/inspector python -m xcode_mcp_server
