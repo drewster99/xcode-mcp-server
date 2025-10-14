@@ -40,13 +40,13 @@ def build_project(project_path: str,
         max_lines: Maximum number of error/warning lines to show (default 25)
 
     Returns:
-        On success, returns "Build succeeded with 0 errors."
-        On failure, returns JSON with format:
+        Always returns JSON with format:
         {
             "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
             "summary": {"total_errors": N, "total_warnings": M, "showing_errors": X, "showing_warnings": Y},
             "errors_and_warnings": "Build failed with N errors...\nerror: ...\n..."
         }
+        The errors_and_warnings field contains a summary message followed by the actual errors/warnings.
         Errors are prioritized over warnings - errors are shown first, then warnings fill remaining slots.
     """
     # Validate include_warnings parameter
@@ -105,13 +105,8 @@ tell application "Xcode"
                 set buildWaitTime to buildWaitTime + 0.5
         end repeat
 
-        -- 7. Check result
-        set buildStatus to status of actionResult
-        if buildStatus is succeeded then
-                return "Build succeeded."
-        else
-                return build log of actionResult
-        end if
+        -- 7. Return build log (always, to capture warnings even on success)
+        return build log of actionResult
 end tell
     '''
     else:
@@ -150,45 +145,39 @@ tell application "Xcode"
                 set buildWaitTime to buildWaitTime + 0.5
         end repeat
 
-        -- 6. Check result
-        set buildStatus to status of actionResult
-        if buildStatus is succeeded then
-                return "Build succeeded."
-        else
-                return build log of actionResult
-        end if
+        -- 6. Return build log (always, to capture warnings even on success)
+        return build log of actionResult
 end tell
     '''
 
     success, output = run_applescript(script)
 
     if success:
-        if output == "Build succeeded.":
-            show_result_notification(f"✅ Build succeeded", project_name)
-            return "Build succeeded with 0 errors.\n\nUse `run_project` to launch the app, or `run_project_tests` to run tests."
-        else:
-            # Use the shared helper to extract and format errors/warnings (returns JSON)
-            errors_output = extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
+        # Always extract and format errors/warnings (returns JSON)
+        errors_output = extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
 
-            # Parse JSON to show appropriate notification
-            import json
-            try:
-                result = json.loads(errors_output)
-                summary = result.get("summary", {})
-                total_errors = summary.get("total_errors", 0)
-                total_warnings = summary.get("total_warnings", 0)
+        # Parse JSON to show appropriate notification
+        import json
+        try:
+            result = json.loads(errors_output)
+            summary = result.get("summary", {})
+            total_errors = summary.get("total_errors", 0)
+            total_warnings = summary.get("total_warnings", 0)
 
-                if total_errors == 0 and total_warnings > 0:
-                    # Warnings only - build succeeded
-                    show_warning_notification(f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}", project_name)
-                elif total_errors > 0:
-                    # Has errors - build failed
-                    show_error_notification(f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}", project_name)
-            except json.JSONDecodeError:
-                # Fallback if JSON parsing fails
-                show_error_notification("Build failed", project_name)
+            if total_errors == 0 and total_warnings == 0:
+                # No errors or warnings - clean build
+                show_result_notification(f"✅ Build succeeded", project_name)
+            elif total_errors == 0 and total_warnings > 0:
+                # Warnings only - build succeeded
+                show_warning_notification(f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}", project_name)
+            else:
+                # Has errors - build failed
+                show_error_notification(f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}", project_name)
+        except json.JSONDecodeError:
+            # Fallback if JSON parsing fails
+            show_error_notification("Build failed", project_name)
 
-            return errors_output
+        return errors_output
     else:
         show_error_notification("Build failed to start", project_name)
         raise XCodeMCPError(f"Build failed to start for scheme {scheme} in project {project_path}: {output}")

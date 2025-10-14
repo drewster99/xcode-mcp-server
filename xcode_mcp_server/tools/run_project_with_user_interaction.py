@@ -35,9 +35,9 @@ def run_project_with_user_interaction(project_path: str,
     Run the app and display an alert dialog for you to interact with it.
 
     The app will run in Xcode/Simulator. Once confirmed running, an alert dialog
-    will appear with a "Finish" button.
+    will appear with an "I'm finished - Terminate App" button.
 
-    - Click "Finish" when you're done testing → app will be force-stopped
+    - Click the button when you're done testing → app will be force-stopped
     - If the app terminates on its own → no force-stop needed
 
     In either case, runtime logs are extracted and returned after a 2-second wait.
@@ -135,11 +135,11 @@ def run_project_with_user_interaction(project_path: str,
     # Poll for a few seconds to verify the app is actually running
     time.sleep(3)
 
-    # Show the persistent alert with "Finish" button
+    # Show the persistent alert with clear button text
     alert_process = show_persistent_alert(
         f"{project_name} is running",
-        f"{project_name} is now running in Xcode/Simulator.\\n\\nInteract with the app as needed, then click Finish when you're done testing.",
-        button_text="Finish"
+        f"{project_name} is now running in Xcode/Simulator.\n\nInteract with the app as needed, then click the button below when you're done testing.",
+        button_text="I'm finished - Terminate App"
     )
 
     print(f"Alert shown. Polling for app termination or user finish click...", file=sys.stderr)
@@ -152,9 +152,9 @@ def run_project_with_user_interaction(project_path: str,
     user_clicked_finish = False
 
     while True:
-        # Check if user clicked Finish
+        # Check if user clicked the terminate button
         if alert_process and alert_process.poll() is not None:
-            print(f"User clicked Finish", file=sys.stderr)
+            print(f"User clicked 'I'm finished - Terminate App'", file=sys.stderr)
             user_clicked_finish = True
             break
 

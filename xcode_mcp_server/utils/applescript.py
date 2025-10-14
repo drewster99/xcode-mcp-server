@@ -146,7 +146,7 @@ def show_persistent_alert(title: str, message: str, button_text: str = "OK") -> 
 
     Args:
         title: Alert dialog title
-        message: Alert dialog message body
+        message: Alert dialog message body (newlines are supported)
         button_text: Text for the button (default "OK")
 
     Returns:
@@ -156,8 +156,13 @@ def show_persistent_alert(title: str, message: str, button_text: str = "OK") -> 
         try:
             # Escape strings for AppleScript
             escaped_title = escape_applescript_string(title)
-            escaped_message = escape_applescript_string(message)
             escaped_button = escape_applescript_string(button_text)
+
+            # Handle newlines in message - replace \n with AppleScript's 'return'
+            # First escape the message normally, then handle newlines
+            escaped_message = escape_applescript_string(message)
+            # Replace escaped newlines with AppleScript return concatenation
+            escaped_message = escaped_message.replace('\\n', '" & return & "')
 
             # Build AppleScript for alert dialog
             script = f'display dialog "{escaped_message}" with title "{escaped_title}" buttons {{"{escaped_button}"}} default button "{escaped_button}" with icon caution'

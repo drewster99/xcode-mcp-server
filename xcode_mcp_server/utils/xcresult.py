@@ -439,12 +439,12 @@ def extract_build_errors_and_warnings(build_log: str,
             count_msg += f" Showing first {max_lines} of {total_errors} errors."
         output_text = f"{count_msg}\n{important_list}"
     elif warning_lines:
-        count_msg = f"Build completed with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
+        count_msg = f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
         if len(warning_lines) > max_lines:
             count_msg += f" Showing first {max_lines} of {total_warnings} warnings."
         output_text = f"{count_msg}\n{important_list}"
     else:
-        output_text = "Build failed (no specific errors or warnings found in output)"
+        output_text = "Build succeeded with 0 errors."
 
     # Build JSON output
     result = {

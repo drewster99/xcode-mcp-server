@@ -27,11 +27,12 @@ def get_build_errors(project_path: str,
         max_lines: Maximum number of error/warning lines to show (default 25)
 
     Returns:
-        JSON string with format:
+        If no build has been performed: Returns plain text message.
+        Otherwise, returns JSON string with format:
         {
             "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
             "summary": {"total_errors": N, "total_warnings": M, "showing_errors": X, "showing_warnings": Y},
-            "errors_and_warnings": "Build failed with N errors...\nerror: ...\n..."
+            "errors_and_warnings": "Build succeeded/failed with N errors...\nerror: ...\n..."
         }
         Output is filtered using regex patterns to match compiler errors/warnings, with errors
         prioritized over warnings. Includes full unfiltered log file for complete analysis.
@@ -46,11 +47,13 @@ def get_build_errors(project_path: str,
 
     # Get the last build log from the workspace
     script = f'''
+    set projectPath to "{escaped_path}"
+
     tell application "Xcode"
-        open "{escaped_path}"
+        open projectPath
 
         -- Get the workspace document
-        set workspaceDoc to first workspace document whose path is "{escaped_path}"
+        set workspaceDoc to first workspace document whose path is projectPath
 
         -- Wait for it to load (timeout after ~30 seconds)
         repeat 60 times
@@ -67,15 +70,8 @@ def get_build_errors(project_path: str,
             -- Get the most recent scheme action result
             set lastBuildResult to last scheme action result of workspaceDoc
 
-            -- Check the build status
-            set buildStatus to status of lastBuildResult
-
-            -- Return status and log
-            if buildStatus is succeeded then
-                return "BUILD_SUCCEEDED"
-            else
-                return build log of lastBuildResult
-            end if
+            -- Always return the build log to capture warnings even on success
+            return build log of lastBuildResult
         on error
             -- No build has been performed yet
             return ""
@@ -88,10 +84,8 @@ def get_build_errors(project_path: str,
     if success:
         if output == "":
             return "No build has been performed yet for this project."
-        elif output == "BUILD_SUCCEEDED":
-            return "Build succeeded with 0 errors."
         else:
-            # Use the shared helper to extract and format errors/warnings (returns JSON)
+            # Always extract and format errors/warnings (returns JSON)
             return extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
     else:
         raise XCodeMCPError(f"Failed to retrieve build errors: {output}")
