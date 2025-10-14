@@ -30,3 +30,6 @@ Thumbs.db
 # Claude
 .claude
 .claude/**
+
+# Test working directory (ephemeral test artifacts)
+test_projects/working/
