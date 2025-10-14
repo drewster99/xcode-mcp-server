@@ -22,7 +22,11 @@
       "mcp__xcode-mcp-server__debug_list_notification_history",
       "Bash(osascript:*)",
       "mcp__xcode-mcp-server__get_directory_listing",
-      "mcp__xcode-mcp-server__get_directory_tree"
+      "mcp__xcode-mcp-server__get_directory_tree",
+      "Bash(find:*)",
+      "Bash(xcrun simctl help:*)",
+      "Bash(xcrun simctl list:*)",
+      "Bash(/tmp/test_applescript.sh:*)"
     ],
     "deny": [],
     "ask": []
