@@ -51,11 +51,14 @@ def run_project_unmonitored(project_path: str,
     if scheme:
         escaped_scheme = escape_applescript_string(scheme)
         script = f'''
+        set projectPath to "{escaped_path}"
+        set schemeName to "{escaped_scheme}"
+
         tell application "Xcode"
-            open "{escaped_path}"
+            open projectPath
 
             -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
 
             -- Wait for it to load
             repeat 60 times
@@ -68,7 +71,7 @@ def run_project_unmonitored(project_path: str,
             end if
 
             -- Set the active scheme
-            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is "{escaped_scheme}")
+            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
 
             -- Run
             run workspaceDoc
@@ -78,11 +81,13 @@ def run_project_unmonitored(project_path: str,
         '''
     else:
         script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            open "{escaped_path}"
+            open projectPath
 
             -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
 
             -- Wait for it to load
             repeat 60 times

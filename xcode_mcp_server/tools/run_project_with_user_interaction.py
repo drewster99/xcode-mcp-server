@@ -67,11 +67,14 @@ def run_project_with_user_interaction(project_path: str,
     if scheme:
         escaped_scheme = escape_applescript_string(scheme)
         script = f'''
+        set projectPath to "{escaped_path}"
+        set schemeName to "{escaped_scheme}"
+
         tell application "Xcode"
-            open "{escaped_path}"
+            open projectPath
 
             -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
 
             -- Wait for it to load
             repeat 60 times
@@ -84,7 +87,7 @@ def run_project_with_user_interaction(project_path: str,
             end if
 
             -- Set the active scheme
-            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is "{escaped_scheme}")
+            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
 
             -- Run
             set actionResult to run workspaceDoc
@@ -94,11 +97,13 @@ def run_project_with_user_interaction(project_path: str,
         '''
     else:
         script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            open "{escaped_path}"
+            open projectPath
 
             -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
 
             -- Wait for it to load
             repeat 60 times
@@ -160,8 +165,10 @@ def run_project_with_user_interaction(project_path: str,
 
         # Check if app terminated naturally
         check_script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
             set lastAction to last scheme action result of workspaceDoc
             return completed of lastAction as string
         end tell
@@ -186,8 +193,10 @@ def run_project_with_user_interaction(project_path: str,
     if user_clicked_finish and not app_terminated:
         print(f"Force-stopping app...", file=sys.stderr)
         stop_script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
             stop workspaceDoc
         end tell
         '''
@@ -196,8 +205,10 @@ def run_project_with_user_interaction(project_path: str,
         # Wait and verify it stopped
         for _ in range(10):  # Wait up to 20 seconds
             check_script = f'''
+            set projectPath to "{escaped_path}"
+
             tell application "Xcode"
-                set workspaceDoc to first workspace document whose path is "{escaped_path}"
+                set workspaceDoc to first workspace document whose path is projectPath
                 set lastAction to last scheme action result of workspaceDoc
                 return completed of lastAction as string
             end tell

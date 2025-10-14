@@ -29,10 +29,12 @@ def get_project_schemes(project_path: str) -> str:
     escaped_path = escape_applescript_string(normalized_path)
 
     script = f'''
-    tell application "Xcode"
-        open "{escaped_path}"
+    set projectPath to "{escaped_path}"
 
-        set workspaceDoc to first workspace document whose path is "{escaped_path}"
+    tell application "Xcode"
+        open projectPath
+
+        set workspaceDoc to first workspace document whose path is projectPath
 
         -- Wait for it to load
         repeat 60 times

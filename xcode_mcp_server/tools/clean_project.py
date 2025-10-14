@@ -28,11 +28,13 @@ def clean_project(project_path: str) -> str:
 
     # AppleScript to clean the project
     script = f'''
+    set projectPath to "{escaped_path}"
+
     tell application "Xcode"
-        open "{escaped_path}"
+        open projectPath
 
         -- Get the workspace document
-        set workspaceDoc to first workspace document whose path is "{escaped_path}"
+        set workspaceDoc to first workspace document whose path is projectPath
 
         -- Wait for it to load (timeout after ~30 seconds)
         repeat 60 times

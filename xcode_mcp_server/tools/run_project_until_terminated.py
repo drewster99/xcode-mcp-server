@@ -64,11 +64,14 @@ def run_project_until_terminated(project_path: str,
     if scheme:
         escaped_scheme = escape_applescript_string(scheme)
         script = f'''
+        set projectPath to "{escaped_path}"
+        set schemeName to "{escaped_scheme}"
+
         tell application "Xcode"
-            open "{escaped_path}"
+            open projectPath
 
             -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
 
             -- Wait for it to load
             repeat 60 times
@@ -81,7 +84,7 @@ def run_project_until_terminated(project_path: str,
             end if
 
             -- Set the active scheme
-            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is "{escaped_scheme}")
+            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
 
             -- Run
             set actionResult to run workspaceDoc
@@ -91,11 +94,13 @@ def run_project_until_terminated(project_path: str,
         '''
     else:
         script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            open "{escaped_path}"
+            open projectPath
 
             -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
 
             -- Wait for it to load
             repeat 60 times
@@ -137,8 +142,10 @@ def run_project_until_terminated(project_path: str,
     while elapsed < timeout:
         # Check if app terminated
         check_script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
             set lastAction to last scheme action result of workspaceDoc
             return completed of lastAction as string
         end tell
@@ -159,8 +166,10 @@ def run_project_until_terminated(project_path: str,
         show_warning_notification("App timeout (10 min)", "Force-stopping app")
 
         stop_script = f'''
+        set projectPath to "{escaped_path}"
+
         tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is "{escaped_path}"
+            set workspaceDoc to first workspace document whose path is projectPath
             stop workspaceDoc
         end tell
         '''
@@ -169,8 +178,10 @@ def run_project_until_terminated(project_path: str,
         # Wait and verify it stopped (up to 20 seconds)
         for _ in range(10):
             check_script = f'''
+            set projectPath to "{escaped_path}"
+
             tell application "Xcode"
-                set workspaceDoc to first workspace document whose path is "{escaped_path}"
+                set workspaceDoc to first workspace document whose path is projectPath
                 set lastAction to last scheme action result of workspaceDoc
                 return completed of lastAction as string
             end tell
