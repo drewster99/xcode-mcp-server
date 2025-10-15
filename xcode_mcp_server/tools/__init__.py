@@ -25,3 +25,4 @@ from . import list_project_tests
 from . import run_project_tests
 from . import get_latest_test_results
 from . import debug_list_notification_history
+from . import get_build_results
