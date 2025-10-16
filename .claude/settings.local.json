@@ -26,7 +26,13 @@
       "Bash(find:*)",
       "Bash(xcrun simctl help:*)",
       "Bash(xcrun simctl list:*)",
-      "Bash(/tmp/test_applescript.sh:*)"
+      "Bash(/tmp/test_applescript.sh:*)",
+      "Read(//Users/andrew/Library/Developer/Xcode/DerivedData/**)",
+      "WebSearch",
+      "Bash(xcrun actool:*)",
+      "Read(//private/tmp/xcode-mcp-server/logs/**)",
+      "Bash(gunzip:*)",
+      "Read(//private/tmp/**)"
     ],
     "deny": [],
     "ask": []
