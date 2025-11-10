@@ -1,5 +1,15 @@
 # Xcode MCP Server
 
+[![PyPI](https://img.shields.io/pypi/v/xcode-mcp-server.svg)](https://pypi.org/project/xcode-mcp-server/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/xcode-mcp-server.svg)](https://pypi.org/project/xcode-mcp-server/)
+[![Downloads](https://static.pepy.tech/badge/xcode-mcp-server)](https://pepy.tech/project/xcode-mcp-server)
+[![MCP](https://img.shields.io/badge/MCP-Server-blue)](https://modelcontextprotocol.io)
+[![macOS Only](https://img.shields.io/badge/platform-macOS-lightgrey)](https://www.apple.com/macos/)
+[![Xcode](https://img.shields.io/badge/Xcode-Required-blue)](https://developer.apple.com/xcode/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+[![GitHub last commit](https://img.shields.io/github/last-commit/drewster99/xcode-mcp-server)](https://github.com/drewster99/xcode-mcp-server/commits)
+
 An MCP (Model Context Protocol) server that enables AI assistants to control and interact with Xcode for Apple platform development.
 
 ## What It Does
