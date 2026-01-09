@@ -321,9 +321,12 @@ def extract_build_errors_and_warnings(build_log: str,
     """
     Extract and format errors and warnings from a build log using regex pattern matching.
 
-    Uses word-boundary regex patterns (\\berror\\s*: and \\bwarning\\s*:) to match compiler
-    errors and warnings while avoiding false positives from phrases like "error-free" or
-    "no errors detected".
+    Uses Xcode diagnostic format patterns to match compiler errors and warnings:
+    - file:line:column: error: (typical compiler output)
+    - ^error: at start of line (standalone errors like linker errors)
+
+    This avoids false positives from Objective-C method signatures like error:(NSError**)error
+    and code snippets in warning messages.
 
     Writes the complete unfiltered build log to /tmp/xcode-mcp-server/logs/build-{hash}.txt
     for full analysis.
@@ -381,10 +384,12 @@ def extract_build_errors_and_warnings(build_log: str,
     error_lines = []
     warning_lines = []
 
-    # Pattern for compiler errors/warnings: matches "error:" or "warning:" at word boundaries
-    # This avoids false positives from phrases like "error-free" or "no errors"
-    error_pattern = re.compile(r'\berror\s*:', re.IGNORECASE)
-    warning_pattern = re.compile(r'\bwarning\s*:', re.IGNORECASE)
+    # Pattern for compiler errors/warnings in Xcode diagnostic format:
+    # - file:line:column: error: message (typical compiler output)
+    # - ^error: at start of line (standalone errors like linker errors)
+    # This avoids false positives from Objective-C method signatures like "error:(NSError**)error"
+    error_pattern = re.compile(r'(:\d+:\d+: error:)|(^error\s*:)', re.IGNORECASE | re.MULTILINE)
+    warning_pattern = re.compile(r'(:\d+:\d+: warning:)|(^warning\s*:)', re.IGNORECASE | re.MULTILINE)
 
     # Single iteration through output lines to extract errors/warnings
     for line in output_lines:
