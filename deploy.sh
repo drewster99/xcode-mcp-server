@@ -105,6 +105,8 @@ echo ""
 # Commit and push the version bump
 echo "📝 Committing version bump..."
 git add xcode_mcp_server/__init__.py
+git add dist
+git add dist-archive
 git commit -m "v$NEW_VERSION"
 git push
 echo ""
