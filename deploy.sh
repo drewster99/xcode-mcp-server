@@ -9,22 +9,22 @@
 #   You can use pre-release version numbers following
 #     https://peps.python.org/pep-0440/. PyPI will accept them, but pip won't
 #     install them by default.
-#   
+#
 #     Pre-release version formats:
 #     - 1.2.3b1 - beta 1
 #     - 1.2.3a1 - alpha 1
 #     - 1.2.3rc1 - release candidate 1
-#   
+#
 #     To publish a beta:
 #     python -m hatch version 1.2.3b1  # Set beta version
 #     python -m build
 #     python -m twine upload dist/*
-#   
+#
 #     Users can install it with:
 #     # Specific beta version (safest for testers)
 #     pip install xcode-mcp-server==1.2.3b1
 #     uvx xcode-mcp-server==1.2.3b1
-#   
+#
 #     Regular users doing pip install xcode-mcp-server will get the latest
 #     stable version and skip all pre-releases automatically.
 
@@ -32,68 +32,26 @@ set -e  # Exit on error
 
 echo "🚀 Starting xcode-mcp-server deployment..."
 echo ""
+
+# Pre-flight: ensure no unstaged changes
+UNSTAGED=$(git diff --name-only)
+if [ -n "$UNSTAGED" ]; then
+    echo "❌ You have unstaged changes:"
+    git diff --stat
+    echo ""
+    echo "Please stage ('git add') or commit your changes before deploying."
+    exit 1
+fi
+echo "✅ No unstaged changes"
+echo ""
+
 /bin/echo -n "Hit enter to continue:"
 read foo
 
-# Check dependencies
-MISSING_DEPS=()
-
-# Check for python or python3
-if command -v python &> /dev/null; then
-    PYTHON_CMD="python"
-    echo "✅ python found: $(which python)"
-elif command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
-    echo "✅ python3 found: $(which python3)"
-else
-    echo "❌ python/python3 is not installed or not in PATH"
-    MISSING_DEPS+=("python")
-fi
-
-if ! $PYTHON_CMD -c "import hatch" &> /dev/null; then
-    echo "❌ hatch is not installed"
-    MISSING_DEPS+=("hatch")
-else
-    echo "✅ hatch found"
-fi
-
-if ! $PYTHON_CMD -c "import twine" &> /dev/null; then
-    echo "❌ twine is not installed"
-    MISSING_DEPS+=("twine")
-else
-    echo "✅ twine found"
-fi
-
+# Set up venv and install deploy dependencies
+source "$(dirname "${BASH_SOURCE[0]}")/_venv-setup.sh"
+pip install -q hatch build twine
 echo ""
-
-# Handle missing dependencies
-if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-    for dep in "${MISSING_DEPS[@]}"; do
-        if [ "$dep" = "python" ]; then
-            echo "Python must be installed manually. Please install Python 3.8+ first."
-            exit 1
-        elif [ "$dep" = "hatch" ]; then
-            read -p "Install hatch with pip? (y/n): " -r
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                $PYTHON_CMD -m pip install hatch
-                echo "✅ hatch installed"
-            else
-                echo "Deployment cannot continue without hatch"
-                exit 1
-            fi
-        elif [ "$dep" = "twine" ]; then
-            read -p "Install twine with pip? (y/n): " -r
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                $PYTHON_CMD -m pip install twine
-                echo "✅ twine installed"
-            else
-                echo "Deployment cannot continue without twine"
-                exit 1
-            fi
-        fi
-    done
-    echo ""
-fi
 
 # Create dist-archive directory if it doesn't exist
 mkdir -p dist-archive
@@ -113,12 +71,13 @@ echo ""
 
 # Increment version
 echo "📝 Incrementing patch version..."
-$PYTHON_CMD -m hatch version patch
+hatch version patch
+NEW_VERSION=$(hatch version)
 echo ""
 
 # Build the package
 echo "🔨 Building package..."
-$PYTHON_CMD -m build
+python -m build
 echo ""
 
 # Copy new build to archive
@@ -128,13 +87,29 @@ echo ""
 
 # Upload to PyPI
 echo "📤 Uploading to PyPI..."
-$PYTHON_CMD -m twine upload dist/*
+twine upload dist/*
 echo ""
 
-echo "Checking available xcode-mcp-server versions available on PyPi:"
-$PYTHON_CMD -m pip index versions xcode-mcp-server
+# Verify on PyPI
+echo "🔍 Verifying version $NEW_VERSION on PyPI..."
+sleep 2
+if curl -sf "https://pypi.org/pypi/xcode-mcp-server/$NEW_VERSION/json" > /dev/null 2>&1; then
+    echo "✅ Version $NEW_VERSION confirmed on PyPI"
+else
+    echo "⚠️  Could not verify version $NEW_VERSION on PyPI."
+    echo "Skipping auto-commit. Please verify manually and commit the version change."
+    exit 1
+fi
 echo ""
-echo "✅ Deployment complete!"
+
+# Commit and push the version bump
+echo "📝 Committing version bump..."
+git add xcode_mcp_server/__init__.py
+git commit -m "v$NEW_VERSION"
+git push
+echo ""
+
+echo "✅ Deployment complete! v$NEW_VERSION is live."
 echo ""
 echo "Test the deployed version with:"
 echo ""
