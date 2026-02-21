@@ -33,6 +33,9 @@ dependencies = [
 [project.scripts]
 xcode-mcp-server = "xcode_mcp_server:main"
 
+[tool.hatch.build.targets.sdist]
+exclude = ["dist-archive/"]
+
 [tool.hatch.version]
 path = "xcode_mcp_server/__init__.py"
 
