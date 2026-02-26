@@ -70,8 +70,13 @@ def get_build_errors(project_path: str,
             -- Get the most recent scheme action result
             set lastBuildResult to last scheme action result of workspaceDoc
 
-            -- Always return the build log to capture warnings even on success
-            return build log of lastBuildResult
+            -- Always return status prefix + build log to capture warnings even on success
+            set buildStatus to "unknown"
+            try
+                set buildStatus to status of lastBuildResult as string
+            end try
+            return "BUILD_STATUS:" & buildStatus & "
+" & build log of lastBuildResult
         on error
             -- No build has been performed yet
             return ""
@@ -85,7 +90,20 @@ def get_build_errors(project_path: str,
         if output == "":
             return "No build has been performed yet for this project."
         else:
+            # Parse the BUILD_STATUS: prefix from the AppleScript output
+            build_status = None
+            build_log = output
+            if output.startswith("BUILD_STATUS:"):
+                newline_pos = output.find("\n")
+                if newline_pos >= 0:
+                    build_status = output[len("BUILD_STATUS:"):newline_pos].strip()
+                    build_log = output[newline_pos + 1:]
+                else:
+                    # No newline — output was just the status line (empty build log)
+                    build_status = output[len("BUILD_STATUS:"):].strip()
+                    build_log = ""
+
             # Always extract and format errors/warnings (returns JSON)
-            return extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
+            return extract_build_errors_and_warnings(build_log, include_warnings, regex_filter, max_lines, build_status=build_status)
     else:
         raise XCodeMCPError(f"Failed to retrieve build errors: {output}")

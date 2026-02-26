@@ -105,8 +105,13 @@ tell application "Xcode"
                 set buildWaitTime to buildWaitTime + 0.5
         end repeat
 
-        -- 7. Return build log (always, to capture warnings even on success)
-        return build log of actionResult
+        -- 7. Return status prefix + build log (always, to capture warnings even on success)
+        set buildStatus to "unknown"
+        try
+                set buildStatus to status of actionResult as string
+        end try
+        return "BUILD_STATUS:" & buildStatus & "
+" & build log of actionResult
 end tell
     '''
     else:
@@ -145,34 +150,53 @@ tell application "Xcode"
                 set buildWaitTime to buildWaitTime + 0.5
         end repeat
 
-        -- 6. Return build log (always, to capture warnings even on success)
-        return build log of actionResult
+        -- 6. Return status prefix + build log (always, to capture warnings even on success)
+        set buildStatus to "unknown"
+        try
+                set buildStatus to status of actionResult as string
+        end try
+        return "BUILD_STATUS:" & buildStatus & "
+" & build log of actionResult
 end tell
     '''
 
     success, output = run_applescript(script)
 
     if success:
+        # Parse the BUILD_STATUS: prefix from the AppleScript output
+        build_status = None
+        build_log = output
+        if output.startswith("BUILD_STATUS:"):
+            newline_pos = output.find("\n")
+            if newline_pos >= 0:
+                build_status = output[len("BUILD_STATUS:"):newline_pos].strip()
+                build_log = output[newline_pos + 1:]
+            else:
+                # No newline — output was just the status line (empty build log)
+                build_status = output[len("BUILD_STATUS:"):].strip()
+                build_log = ""
+
         # Always extract and format errors/warnings (returns JSON)
-        errors_output = extract_build_errors_and_warnings(output, include_warnings, regex_filter, max_lines)
+        errors_output = extract_build_errors_and_warnings(build_log, include_warnings, regex_filter, max_lines, build_status=build_status)
 
         # Parse JSON to show appropriate notification
         import json
         try:
             result = json.loads(errors_output)
             summary = result.get("summary", {})
+            is_failed = summary.get("build_failed", False)
             total_errors = summary.get("total_errors", 0)
             total_warnings = summary.get("total_warnings", 0)
 
-            if total_errors == 0 and total_warnings == 0:
-                # No errors or warnings - clean build
-                show_result_notification(f"✅ Build succeeded", project_name)
-            elif total_errors == 0 and total_warnings > 0:
-                # Warnings only - build succeeded
+            if is_failed:
+                if total_errors > 0:
+                    show_error_notification(f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}", project_name)
+                else:
+                    show_error_notification("Build failed (see log for details)", project_name)
+            elif total_warnings > 0:
                 show_warning_notification(f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}", project_name)
             else:
-                # Has errors - build failed
-                show_error_notification(f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}", project_name)
+                show_result_notification(f"✅ Build succeeded", project_name)
         except json.JSONDecodeError:
             # Fallback if JSON parsing fails
             show_error_notification("Build failed", project_name)

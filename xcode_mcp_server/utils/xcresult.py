@@ -317,7 +317,8 @@ def _format_structured_logs(all_logs: list, xcresult_path: str,
 def extract_build_errors_and_warnings(build_log: str,
                                      include_warnings: Optional[bool] = None,
                                      regex_filter: Optional[str] = None,
-                                     max_lines: int = 25) -> str:
+                                     max_lines: int = 25,
+                                     build_status: Optional[str] = None) -> str:
     """
     Extract and format errors and warnings from a build log using regex pattern matching.
 
@@ -341,12 +342,17 @@ def extract_build_errors_and_warnings(build_log: str,
                          Note: Command-line flags override this parameter if set.
         regex_filter: Optional regex to further filter error/warning lines
         max_lines: Maximum number of error/warning lines to include (default 25)
+        build_status: The status string from Xcode's scheme action result
+                     (e.g. "succeeded", "failed", "error occurred").
+                     When provided, used to detect build failure even if no errors
+                     match the regex patterns (signing errors, provisioning issues, etc.).
 
     Returns:
         JSON string with format:
         {
             "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
             "summary": {
+                "build_failed": bool,
                 "total_errors": N,
                 "total_warnings": M,
                 "showing_errors": X,
@@ -381,15 +387,25 @@ def extract_build_errors_and_warnings(build_log: str,
         temp_log_path = None
 
     output_lines = build_log.split("\n")
+
+    # Determine build outcome from Xcode's status property when available
+    if build_status is not None:
+        build_failed = build_status.lower() not in ("succeeded",)
+    else:
+        # Fallback: check log text (for callers that don't provide status)
+        build_failed = any(line.strip().lower() == "build failed" for line in output_lines)
+
     error_lines = []
     warning_lines = []
 
     # Pattern for compiler errors/warnings in Xcode diagnostic format:
     # - file:line:column: error: message (typical compiler output)
     # - ^error: at start of line (standalone errors like linker errors)
-    # This avoids false positives from Objective-C method signatures like "error:(NSError**)error"
-    error_pattern = re.compile(r'(:\d+:\d+: error:)|(^error\s*:)', re.IGNORECASE | re.MULTILINE)
-    warning_pattern = re.compile(r'(:\d+:\d+: warning:)|(^warning\s*:)', re.IGNORECASE | re.MULTILINE)
+    # - path: error: message (project-level errors like missing packages, signing)
+    # The leading \s+ in the third alternative avoids false positives from
+    # Objective-C method signatures like "error:(NSError**)error"
+    error_pattern = re.compile(r'(:\d+:\d+: error:)|(^error\s*:)|(:\s+error:)', re.IGNORECASE | re.MULTILINE)
+    warning_pattern = re.compile(r'(:\d+:\d+: warning:)|(^warning\s*:)|(:\s+warning:)', re.IGNORECASE | re.MULTILINE)
 
     # Single iteration through output lines to extract errors/warnings
     for line in output_lines:
@@ -444,17 +460,34 @@ def extract_build_errors_and_warnings(build_log: str,
             count_msg += f" Showing first {max_lines} of {total_errors} errors."
         output_text = f"{count_msg}\n{important_list}"
     elif warning_lines:
-        count_msg = f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
-        if len(warning_lines) > max_lines:
-            count_msg += f" Showing first {max_lines} of {total_warnings} warnings."
-        output_text = f"{count_msg}\n{important_list}"
+        if build_failed:
+            # Build failed but only warnings matched (no error patterns) — e.g. signing failure after partial compilation
+            tail_lines = [l for l in output_lines if l.strip()][-max_lines:]
+            tail_text = "\n".join(tail_lines)
+            count_msg = f"Build failed with 0 recognized errors and {total_warnings} warning{'s' if total_warnings != 1 else ''}. See log tail and full log for details."
+            output_text = f"{count_msg}\n{tail_text}"
+            total_errors = 1  # Signal failure in summary
+        else:
+            count_msg = f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
+            if len(warning_lines) > max_lines:
+                count_msg += f" Showing first {max_lines} of {total_warnings} warnings."
+            output_text = f"{count_msg}\n{important_list}"
     else:
-        output_text = "Build succeeded with 0 errors."
+        if build_failed:
+            # Build failed but no errors matched our regex patterns
+            # (e.g. signing errors, provisioning issues, validation failures)
+            tail_lines = [l for l in output_lines if l.strip()][-max_lines:]
+            tail_text = "\n".join(tail_lines)
+            output_text = f"Build failed with 0 recognized errors. See log tail and full log for details.\n{tail_text}"
+            total_errors = 1  # Signal failure in summary
+        else:
+            output_text = "Build succeeded with 0 errors."
 
     # Build JSON output
     result = {
         "full_log_path": temp_log_path,
         "summary": {
+            "build_failed": build_failed,
             "total_errors": total_errors,
             "total_warnings": total_warnings,
             "showing_errors": displayed_errors,
@@ -464,6 +497,20 @@ def extract_build_errors_and_warnings(build_log: str,
     }
 
     return json.dumps(result, indent=2)
+
+
+# NOTE: We intentionally do NOT use Xcode's structured build errors/warnings
+# available via AppleScript (e.g. `build errors of last scheme action result`).
+# While these provide structured data (message, file path, line/column numbers),
+# they are unreliable for two reasons:
+# 1. Xcode accumulates issues across incremental builds until a clean or until
+#    the issue is resolved — so counts include stale issues from earlier builds.
+# 2. Structured errors may not disappear even after the underlying issue is fixed,
+#    leading to persistent phantom errors that confuse the output.
+# Instead, we regex-match the build log text (which reflects the current build only)
+# and use the build status from `status of scheme action result` to detect failures
+# that don't produce regex-matchable error lines (e.g. signing, provisioning,
+# missing package products).
 
 
 def find_xcresult_for_project(project_path: str) -> Optional[str]:
