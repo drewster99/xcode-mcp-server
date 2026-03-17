@@ -389,11 +389,15 @@ def extract_build_errors_and_warnings(build_log: str,
     output_lines = build_log.split("\n")
 
     # Determine build outcome from Xcode's status property when available
+    log_says_failed = any(line.strip().lower() == "build failed" for line in output_lines)
     if build_status is not None:
         build_failed = build_status.lower() not in ("succeeded",)
+        # Safety net: if the log explicitly says "Build failed" but AppleScript
+        # reported success (e.g. linker failures in debug dylib linking), trust the log
+        if not build_failed and log_says_failed:
+            build_failed = True
     else:
-        # Fallback: check log text (for callers that don't provide status)
-        build_failed = any(line.strip().lower() == "build failed" for line in output_lines)
+        build_failed = log_says_failed
 
     error_lines = []
     warning_lines = []
