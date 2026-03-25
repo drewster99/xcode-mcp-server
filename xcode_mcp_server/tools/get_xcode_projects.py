@@ -12,6 +12,15 @@ from xcode_mcp_server.security import ALLOWED_FOLDERS, is_path_allowed
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError
 from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification, show_result_notification, show_warning_notification
 
+# Tracks .xcodeproj paths created during this server session, so they can
+# be returned by get_xcode_projects before Spotlight indexes them.
+_recently_created_projects: list[str] = []
+
+
+def register_created_project(xcodeproj_path: str):
+    """Record a newly created .xcodeproj so get_xcode_projects can find it immediately."""
+    _recently_created_projects.append(xcodeproj_path)
+
 
 def _get_recent_xcode_projects() -> list[str]:
     """
@@ -233,6 +242,13 @@ def get_xcode_projects(
             show_warning_notification(f"mdfind failed for {os.path.basename(path)}", str(e))
             print(f"Warning: Error searching in {path}: {str(e)}", file=sys.stderr)
             continue
+
+    # Supplement mdfind with recently created projects that Spotlight
+    # may not have indexed yet
+    mdfind_set = set(all_results)
+    for path in _recently_created_projects:
+        if path not in mdfind_set and os.path.exists(path):
+            all_results.append(path)
 
     # Get recent projects if requested
     recent_projects = []

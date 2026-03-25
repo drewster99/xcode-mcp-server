@@ -17,6 +17,7 @@ from xcode_mcp_server.utils.project_templates import (
     generate_project,
     sanitize_to_identifier,
 )
+from xcode_mcp_server.tools.get_xcode_projects import register_created_project
 
 
 SUPPORTED_PLATFORMS = {"ios", "macos"}
@@ -79,6 +80,9 @@ def create_project(
         bundle_identifier=bundle_identifier or None,
         deployment_target=deployment_target or None,
     )
+
+    # Register so get_xcode_projects finds it before Spotlight indexes it
+    register_created_project(result["project_path"])
 
     show_result_notification(
         f"Created: {project_name}",
