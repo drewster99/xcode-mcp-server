@@ -2,6 +2,7 @@
 """Security and path validation utilities for Xcode MCP Server"""
 
 import os
+import re
 import sys
 from typing import Optional, List, Set
 
@@ -159,3 +160,67 @@ def validate_and_normalize_project_path(project_path: str, function_name: str) -
 
     # Normalize the path to resolve symlinks
     return os.path.realpath(project_path)
+
+
+def validate_parent_for_new_project(parent_path: str, project_name: str) -> str:
+    """
+    Validate that a parent directory is allowed and a project name is safe
+    for creating a new Xcode project.
+
+    Args:
+        parent_path: Directory where the project folder will be created
+        project_name: Name of the new project
+
+    Returns:
+        Normalized parent path
+
+    Raises:
+        InvalidParameterError: If validation fails
+        AccessDeniedError: If path access is denied
+    """
+    from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
+
+    if not parent_path or parent_path.strip() == "":
+        raise InvalidParameterError("parent_directory cannot be empty")
+
+    if not project_name or project_name.strip() == "":
+        raise InvalidParameterError("project_name cannot be empty")
+
+    parent_path = parent_path.strip().rstrip("/")
+    project_name = project_name.strip()
+
+    if not os.path.isabs(parent_path):
+        raise InvalidParameterError("parent_directory must be an absolute path")
+
+    if ".." in parent_path:
+        raise InvalidParameterError("parent_directory must not contain '..' components")
+
+    if not os.path.exists(parent_path):
+        show_error_notification(f"Path not found: {parent_path}")
+        raise InvalidParameterError(f"parent_directory does not exist: {parent_path}")
+
+    if not os.path.isdir(parent_path):
+        raise InvalidParameterError(f"parent_directory is not a directory: {parent_path}")
+
+    if not is_path_allowed(parent_path):
+        show_access_denied_notification(f"Access denied: {parent_path}")
+        raise AccessDeniedError(
+            f"Access to path '{parent_path}' is not allowed. "
+            "Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        )
+
+    # Validate project name contains only safe characters
+    if not re.match(r'^[A-Za-z0-9][A-Za-z0-9 _-]*$', project_name):
+        raise InvalidParameterError(
+            "project_name must start with a letter or digit and contain only "
+            "letters, digits, spaces, hyphens, or underscores"
+        )
+
+    # Prevent overwriting existing projects
+    project_dir = os.path.join(parent_path, project_name)
+    if os.path.exists(project_dir):
+        raise InvalidParameterError(
+            f"A file or directory already exists at: {project_dir}"
+        )
+
+    return os.path.realpath(parent_path)

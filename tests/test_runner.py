@@ -43,10 +43,10 @@ class XcodeMCPTestRunner:
         os.environ["XCODEMCP_ALLOWED_FOLDERS"] = str(self.working_dir)
         print(f"Set allowed folders to: {self.working_dir}")
 
-        # Also set the global variable in the MCP server module
-        import xcode_mcp_server.__main__ as mcp_server
-        mcp_server.ALLOWED_FOLDERS = {str(self.working_dir)}
-        print(f"Set MCP server ALLOWED_FOLDERS to: {mcp_server.ALLOWED_FOLDERS}")
+        # Set the global variable in the security module where it's actually used
+        from xcode_mcp_server.security import set_allowed_folders
+        set_allowed_folders({str(self.working_dir)})
+        print(f"Set ALLOWED_FOLDERS to: {self.working_dir}")
 
     def teardown(self):
         """Clean up the test environment."""
@@ -79,24 +79,17 @@ class XcodeMCPTestRunner:
         """
         Run an MCP tool and return the result.
 
-        This simulates calling the MCP server tools directly.
+        Looks up the tool function from the FastMCP registry and calls it directly.
         """
-        # Import the MCP server module
-        import xcode_mcp_server.__main__ as mcp_server
+        from xcode_mcp_server.server import mcp
+        import xcode_mcp_server.tools  # noqa: F401 — triggers @mcp.tool() registration
 
-        # Get the tool function directly from the module
-        tool_func = None
-
-        # The tools are registered as functions with the @mcp.tool() decorator
-        # We can access them directly by name
-        tool_func = getattr(mcp_server, tool_name, None)
-
-        if not tool_func or not callable(tool_func):
+        tool = mcp._tool_manager._tools.get(tool_name)
+        if not tool:
             raise ValueError(f"Tool not found: {tool_name}")
 
         try:
-            # Call the tool with parameters
-            result = tool_func(**params)
+            result = tool.fn(**params)
             return {"success": True, "result": result}
         except Exception as e:
             return {"success": False, "error": str(e), "error_type": type(e).__name__}
