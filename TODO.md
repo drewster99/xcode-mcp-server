@@ -193,3 +193,4 @@ xcrun xcresulttool get --path <xcresult> --format json
 - All paths validated: absolute, exist, directory, no '..'
 - Default to `$HOME` if not specified
 - Every tool validates project path against allowed folders
+
