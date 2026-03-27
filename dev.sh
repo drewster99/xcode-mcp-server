@@ -59,11 +59,7 @@ echo ""
 echo ""
 echo "If you need to test with Claude, do this:"
 echo "   claude mcp remove xcode-mcp-server"
-echo "   claude mcp add --transport stdio --scope user xcode-mcp-server -- `which python3` -m `pwd`/xcode_mcp_server"
-echo ""
-echo "  or maybe..."
 echo "   claude mcp add --transport stdio --scope user xcode-mcp-server `pwd`/run_local_for_claude.sh"
-echo "   claude mcp add --transport stdio --scope user xcode-mcp-server -- /opt/homebrew/Caskroom/miniconda/base/envs/xcode-mcp-dev/bin/python -m `pwd`/xcode_mcp_server"
 echo ""
 
 # Run the MCP inspector
