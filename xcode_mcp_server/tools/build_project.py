@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """build_project tool - Build an Xcode project"""
 
+import json
 import os
+import re
+import sys
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
@@ -17,6 +20,179 @@ from xcode_mcp_server.utils.applescript import (
     show_warning_notification
 )
 from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
+from xcode_mcp_server.utils.build_log_parser import (
+    find_derived_data_for_project,
+    aggregate_warnings_since_clean
+)
+
+
+def _supplement_with_xcactivitylog_warnings(
+    errors_json: str,
+    project_path: str,
+    include_warnings: Optional[bool],
+    regex_filter: Optional[str],
+    max_lines: int
+) -> str:
+    """
+    Supplement build results with comprehensive warnings from xcactivitylog files.
+
+    The AppleScript build log only contains warnings for files recompiled in the
+    current build. xcactivitylog files contain warnings from all builds since the
+    last clean, providing comprehensive coverage across incremental builds.
+
+    xcactivitylog is the primary source. Any errors or warnings from the AppleScript
+    build log not already present in xcactivitylog are preserved as supplements.
+    """
+    from xcode_mcp_server.utils.xcresult import BUILD_WARNINGS_FORCED, BUILD_WARNINGS_ENABLED
+
+    if BUILD_WARNINGS_FORCED is not None:
+        show_warnings = BUILD_WARNINGS_FORCED
+    else:
+        show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
+
+    if not show_warnings:
+        return errors_json
+
+    try:
+        derived_data_path = find_derived_data_for_project(project_path)
+        if not derived_data_path:
+            return errors_json
+
+        logs_dir = os.path.join(derived_data_path, "Logs", "Build")
+        manifest_path = os.path.join(logs_dir, "LogStoreManifest.plist")
+
+        if not os.path.exists(manifest_path):
+            return errors_json
+
+        xcactivity_result = aggregate_warnings_since_clean(manifest_path, logs_dir)
+        xcactivity_items = xcactivity_result.get('aggregated_warnings', [])
+
+        if not xcactivity_items:
+            return errors_json
+
+        # Apply regex_filter to xcactivitylog items if provided
+        if regex_filter and regex_filter.strip():
+            filter_re = re.compile(regex_filter)
+            xcactivity_items = [
+                w for w in xcactivity_items
+                if filter_re.search(
+                    f"{w['file']}:{w['line']}:{w['column']}: {w['type']}: {w['message']}"
+                )
+            ]
+            if not xcactivity_items:
+                return errors_json
+
+        result = json.loads(errors_json)
+        existing_text = result.get('errors_and_warnings', '')
+        build_failed = result.get('summary', {}).get('build_failed', False)
+
+        # Parse error/warning lines from existing AppleScript result
+        error_re = re.compile(
+            r'(:\d+:\d+: error:)|(^error\s*:)|(:\s+error:)', re.IGNORECASE
+        )
+        warning_re = re.compile(
+            r'(:\d+:\d+: warning:)|(^warning\s*:)|(:\s+warning:)', re.IGNORECASE
+        )
+        flc_re = re.compile(r'(.+?):(\d+):(\d+): (?:warning|error):')
+
+        existing_lines = existing_text.split('\n')
+        applescript_error_lines = [l for l in existing_lines if error_re.search(l)]
+        applescript_warning_lines = [l for l in existing_lines if warning_re.search(l)]
+
+        # Build dedup set from xcactivitylog entries
+        xcact_keys = set()
+        for w in xcactivity_items:
+            xcact_keys.add((w['file'], w['line'], w['column']))
+
+        # Separate xcactivitylog items into error and warning text lines
+        xcact_error_lines = []
+        xcact_warning_lines = []
+        for w in xcactivity_items:
+            line = f"{w['file']}:{w['line']}:{w['column']}: {w['type']}: {w['message']}"
+            if w['type'] == 'error':
+                xcact_error_lines.append(line)
+            else:
+                xcact_warning_lines.append(line)
+
+        # Find AppleScript lines not already in xcactivitylog
+        extra_errors = []
+        for line in applescript_error_lines:
+            m = flc_re.match(line)
+            if m:
+                key = (m.group(1), int(m.group(2)), int(m.group(3)))
+                if key not in xcact_keys:
+                    extra_errors.append(line)
+            else:
+                extra_errors.append(line)
+
+        extra_warnings = []
+        for line in applescript_warning_lines:
+            m = flc_re.match(line)
+            if m:
+                key = (m.group(1), int(m.group(2)), int(m.group(3)))
+                if key not in xcact_keys:
+                    extra_warnings.append(line)
+            else:
+                extra_warnings.append(line)
+
+        # Combine: errors first (xcactivitylog + extras), then warnings
+        all_error_lines = xcact_error_lines + extra_errors
+        all_warning_lines = xcact_warning_lines + extra_warnings
+        total_errors = len(all_error_lines)
+        total_warnings = len(all_warning_lines)
+
+        # Apply max_lines with errors prioritized
+        combined = all_error_lines + all_warning_lines
+        displayed_errors = min(total_errors, max_lines)
+        displayed_warnings = max(0, min(total_warnings, max_lines - displayed_errors))
+        if len(combined) > max_lines:
+            combined = combined[:max_lines]
+
+        # Build count message
+        if build_failed:
+            if total_errors > 0 and total_warnings > 0:
+                count_msg = (
+                    f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}"
+                    f" and {total_warnings} warning{'s' if total_warnings != 1 else ''}."
+                )
+            elif total_errors > 0:
+                count_msg = f"Build failed with {total_errors} error{'s' if total_errors != 1 else ''}."
+            elif total_warnings > 0:
+                count_msg = (
+                    f"Build failed with 0 recognized errors"
+                    f" and {total_warnings} warning{'s' if total_warnings != 1 else ''}."
+                    f" See full log for failure details."
+                )
+            else:
+                return errors_json
+        else:
+            if total_warnings > 0 and total_errors > 0:
+                count_msg = (
+                    f"Build succeeded with {total_errors} error{'s' if total_errors != 1 else ''}"
+                    f" and {total_warnings} warning{'s' if total_warnings != 1 else ''}."
+                )
+            elif total_warnings > 0:
+                count_msg = f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
+            else:
+                return errors_json
+
+        if total_errors + total_warnings > max_lines:
+            count_msg += f" Showing first {len(combined)} of {total_errors + total_warnings}."
+
+        important_list = "\n".join(combined)
+        output_text = f"{count_msg}\n{important_list}" if combined else count_msg
+
+        result['summary']['total_errors'] = total_errors
+        result['summary']['total_warnings'] = total_warnings
+        result['summary']['showing_errors'] = displayed_errors
+        result['summary']['showing_warnings'] = displayed_warnings
+        result['errors_and_warnings'] = output_text
+
+        return json.dumps(result)
+
+    except Exception as e:
+        print(f"Debug: xcactivitylog supplement failed: {e}", file=sys.stderr)
+        return errors_json
 
 
 @mcp.tool()
@@ -179,8 +355,13 @@ end tell
         # Always extract and format errors/warnings (returns JSON)
         errors_output = extract_build_errors_and_warnings(build_log, include_warnings, regex_filter, max_lines, build_status=build_status)
 
+        # Supplement with comprehensive warnings from xcactivitylog files
+        # (AppleScript build log only has warnings for files recompiled in this build)
+        errors_output = _supplement_with_xcactivitylog_warnings(
+            errors_output, normalized_path, include_warnings, regex_filter, max_lines
+        )
+
         # Parse JSON to show appropriate notification
-        import json
         try:
             result = json.loads(errors_output)
             summary = result.get("summary", {})

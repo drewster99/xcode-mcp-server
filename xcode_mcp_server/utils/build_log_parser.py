@@ -178,7 +178,7 @@ def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
 
     # Parse each build's xcactivitylog file
     all_warnings = []
-    all_recompiled_files = set()
+    file_last_compiled: Dict[str, float] = {}
     builds_analyzed = []
 
     for build in builds_to_analyze:
@@ -190,19 +190,22 @@ def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
 
         warnings, compiled_files = parse_xcactivitylog(log_file)
 
-        # Track recompiled files (files compiled in this build)
-        all_recompiled_files.update(compiled_files)
+        # Track the latest build time each file was compiled in
+        build_time = build['timeStartedRecording']
+        for f in compiled_files:
+            if f not in file_last_compiled or build_time > file_last_compiled[f]:
+                file_last_compiled[f] = build_time
 
         # Store warnings with build context
         for warning in warnings:
             warning['build_uuid'] = build['uuid']
-            warning['build_time'] = build['timeStartedRecording']
+            warning['build_time'] = build_time
             all_warnings.append(warning)
 
         builds_analyzed.append({
             'uuid': build['uuid'],
             'title': build['title'],
-            'time': build['timeStartedRecording'],
+            'time': build_time,
             'warnings_found': len(warnings),
             'files_compiled': len(compiled_files)
         })
@@ -226,11 +229,17 @@ def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
         # Sort by build time (descending) to get most recent first
         file_warnings.sort(key=lambda x: x['build_time'], reverse=True)
 
-        # Get the most recent build time for this file
-        most_recent_time = file_warnings[0]['build_time']
+        # Get the most recent build time for this file's warnings
+        most_recent_warning_time = file_warnings[0]['build_time']
+
+        # If this file was recompiled in a later build without warnings, the
+        # old warnings are stale — the file now compiles cleanly.
+        last_compiled = file_last_compiled.get(file_path)
+        if last_compiled is not None and last_compiled > most_recent_warning_time:
+            continue
 
         # Keep only warnings from the most recent build
-        recent_warnings = [w for w in file_warnings if w['build_time'] == most_recent_time]
+        recent_warnings = [w for w in file_warnings if w['build_time'] == most_recent_warning_time]
 
         # Track if file had warnings in multiple builds
         unique_build_times = set(w['build_time'] for w in file_warnings)

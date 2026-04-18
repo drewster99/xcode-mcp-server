@@ -46,20 +46,20 @@ class BasicTests(XcodeMCPTestRunner):
         assert "SimpleApp.xcodeproj" in project_names, "SimpleApp.xcodeproj not found"
         assert "ConsoleApp.xcodeproj" in project_names, "ConsoleApp.xcodeproj not found"
 
-    def test_get_project_hierarchy(self):
-        """Test getting project file hierarchy."""
+    def test_get_directory_tree(self):
+        """Test getting project directory tree."""
         # Copy SimpleApp
         project_path = self.copy_project("SimpleApp")
         xcodeproj_path = project_path / "SimpleApp.xcodeproj"
 
-        # Get hierarchy
-        result = self.run_mcp_tool("get_project_hierarchy", project_path=str(xcodeproj_path))
+        # Get tree (accepts .xcodeproj path, scans parent)
+        result = self.run_mcp_tool("get_directory_tree", directory_path=str(xcodeproj_path))
         self.assert_success(result)
 
-        # Check that hierarchy contains expected elements
-        hierarchy = result["result"]
-        self.assert_contains(hierarchy, "SimpleApp/", "Hierarchy should show SimpleApp directory")
-        self.assert_contains(hierarchy, "SimpleApp.xcodeproj", "Hierarchy should show xcodeproj")
+        # Check that tree contains expected elements
+        tree = result["result"]
+        self.assert_contains(tree, "SimpleApp", "Tree should show SimpleApp directory")
+        self.assert_contains(tree, "SimpleApp.xcodeproj", "Tree should show xcodeproj")
 
     def test_get_project_schemes(self):
         """Test getting available build schemes."""
@@ -81,10 +81,19 @@ class BasicTests(XcodeMCPTestRunner):
 
     def test_path_validation(self):
         """Test path validation and security checks."""
-        # Test with non-existent path
+        # Test with path outside allowed folders (security check fires first)
         result = self.run_mcp_tool(
-            "get_project_hierarchy",
+            "get_project_schemes",
             project_path="/nonexistent/path/Project.xcodeproj"
+        )
+        self.assert_failure(result)
+        self.assert_contains(result["error"], "not allowed")
+
+        # Test with non-existent path inside allowed folders
+        fake_proj = self.working_dir / "DoesNotExist.xcodeproj"
+        result = self.run_mcp_tool(
+            "get_project_schemes",
+            project_path=str(fake_proj)
         )
         self.assert_failure(result)
         self.assert_contains(result["error"], "does not exist")
@@ -94,14 +103,14 @@ class BasicTests(XcodeMCPTestRunner):
         valid_dir.mkdir(exist_ok=True)
 
         result = self.run_mcp_tool(
-            "get_project_hierarchy",
+            "get_project_schemes",
             project_path=str(valid_dir)
         )
         self.assert_failure(result)
         self.assert_contains(result["error"], "must end with")
 
         # Test with empty path
-        result = self.run_mcp_tool("get_project_hierarchy", project_path="")
+        result = self.run_mcp_tool("get_project_schemes", project_path="")
         self.assert_failure(result)
         self.assert_contains(result["error"], "cannot be empty")
 
@@ -130,8 +139,8 @@ class BasicTests(XcodeMCPTestRunner):
             symlink_path.unlink()
         symlink_path.symlink_to(xcodeproj_path)
 
-        # Try to get hierarchy through symlink
-        result = self.run_mcp_tool("get_project_hierarchy", project_path=str(symlink_path))
+        # Try to get directory tree through symlink
+        result = self.run_mcp_tool("get_directory_tree", directory_path=str(symlink_path))
 
         # Should work with normalized path
         if result["success"]:
@@ -153,7 +162,7 @@ def run_basic_tests():
         tests.run_test(tests.test_version, "Version Command")
         tests.run_test(tests.test_get_xcode_projects_empty, "Find Projects - Empty Dir")
         tests.run_test(tests.test_get_xcode_projects_with_projects, "Find Projects - With Projects")
-        tests.run_test(tests.test_get_project_hierarchy, "Get Project Hierarchy")
+        tests.run_test(tests.test_get_directory_tree, "Get Directory Tree")
         tests.run_test(tests.test_get_project_schemes, "Get Project Schemes")
         tests.run_test(tests.test_path_validation, "Path Validation")
         tests.run_test(tests.test_search_all_allowed_folders, "Search All Allowed Folders")
