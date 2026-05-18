@@ -89,7 +89,7 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
             # Clean up temp file
             try:
                 os.unlink(temp_file)
-            except:
+            except OSError:
                 pass
 
         # Check for error

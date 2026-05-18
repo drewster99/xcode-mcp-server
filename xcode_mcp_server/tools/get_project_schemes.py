@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """get_project_schemes tool - Get available build schemes"""
 
-import os
-
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
-from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_error_notification, show_result_notification
+from xcode_mcp_server.utils.applescript import (
+    build_open_and_wait_applescript,
+    escape_applescript_string,
+    run_applescript,
+    show_error_notification,
+    show_result_notification,
+)
 
 
 @mcp.tool()
@@ -28,24 +32,7 @@ def get_project_schemes(project_path: str) -> str:
     normalized_path = validate_and_normalize_project_path(project_path, "Getting schemes for")
     escaped_path = escape_applescript_string(normalized_path)
 
-    script = f'''
-    set projectPath to "{escaped_path}"
-
-    tell application "Xcode"
-        open projectPath
-
-        set workspaceDoc to first workspace document whose path is projectPath
-
-        -- Wait for it to load
-        repeat 60 times
-            if loaded of workspaceDoc is true then exit repeat
-            delay 0.5
-        end repeat
-
-        if loaded of workspaceDoc is false then
-            error "Xcode workspace did not load in time."
-        end if
-
+    script = build_open_and_wait_applescript(escaped_path) + '''
         -- Try to get active scheme name, but don't fail if we can't
         set activeScheme to ""
         try
@@ -55,7 +42,7 @@ def get_project_schemes(project_path: str) -> str:
         end try
 
         -- Get all scheme names
-        set schemeNames to {{}}
+        set schemeNames to {}
         repeat with aScheme in schemes of workspaceDoc
             set end of schemeNames to name of aScheme
         end repeat
@@ -67,12 +54,12 @@ def get_project_schemes(project_path: str) -> str:
             set output to activeScheme & " (active)"
             repeat with schemeName in schemeNames
                 if schemeName as string is not equal to activeScheme then
-                    set output to output & "\\n" & schemeName
+                    set output to output & "\n" & schemeName
                 end if
             end repeat
         else
             -- If no active scheme available, just list all schemes
-            set AppleScript's text item delimiters to "\\n"
+            set AppleScript's text item delimiters to "\n"
             set output to schemeNames as string
             set AppleScript's text item delimiters to ""
         end if

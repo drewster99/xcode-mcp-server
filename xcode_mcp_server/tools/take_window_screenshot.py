@@ -2,15 +2,13 @@
 """take_window_screenshot tool - Screenshot macOS windows"""
 
 import os
-import time
-import uuid
 import subprocess
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
-from xcode_mcp_server.utils.screenshot import _get_all_windows
+from xcode_mcp_server.utils.screenshot import _get_all_windows, get_screenshot_path
 
 
 @mcp.tool()
@@ -66,15 +64,8 @@ def take_window_screenshot(window_id_or_name: str) -> str:
         # Take screenshots
         screenshot_paths = []
 
-        # Create screenshot directory
-        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
-        os.makedirs(screenshot_dir, exist_ok=True)
-
         for window_id, window_title, app_name in matches:
-            # Generate filename with UUID
-            unique_id = uuid.uuid4()
-            filename = f"window_{unique_id}.png"
-            screenshot_path = os.path.join(screenshot_dir, filename)
+            screenshot_path = get_screenshot_path("window")
 
             # Take the screenshot using screencapture (-x flag disables sound)
             result = subprocess.run(

@@ -65,7 +65,7 @@ def list_project_tests(project_path: str) -> str:
                                     bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}Tests"
 
                                 tests.append(f"{bundle}/{class_name}/{method}")
-                    except:
+                    except Exception:
                         continue
 
             if tests:

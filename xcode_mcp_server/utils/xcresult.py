@@ -574,13 +574,19 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
     Returns:
         Path to the xcresult file if found, or None if timeout expires or no valid file found
     """
+    # Some filesystems store mtime/ctime with only 1-second resolution, so a file
+    # created in the same wall-clock second as start_timestamp can read as older.
+    # Allow a small slack so we don't time out waiting for a result that's
+    # already there.
+    timestamp_slack_seconds = 1.0
+    effective_start = start_timestamp - timestamp_slack_seconds
+
     start_datetime = datetime.datetime.fromtimestamp(start_timestamp)
     print(f"Waiting for xcresult modified at or after: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}", file=sys.stderr)
 
     end_time = time.time() + timeout_seconds
 
     while time.time() < end_time:
-        # Try to find an xcresult file
         xcresult_path = find_xcresult_for_project(project_path)
 
         if xcresult_path and os.path.exists(xcresult_path):
@@ -592,21 +598,19 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
 
             print(f"Found xcresult - created: {create_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}, modified: {mod_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')} ({xcresult_path})", file=sys.stderr)
 
-            # Check if BOTH creation time AND modification time are at or after our start time
-            if create_time >= start_timestamp and mod_time >= start_timestamp:
+            if create_time >= effective_start and mod_time >= effective_start:
                 print(f"xcresult creation and modification times are both newer than start time - accepting it", file=sys.stderr)
                 return xcresult_path
             else:
-                if create_time < start_timestamp:
-                    time_diff = start_timestamp - create_time
+                if create_time < effective_start:
+                    time_diff = effective_start - create_time
                     print(f"xcresult creation time is {time_diff:.2f} seconds older than start time - waiting for newer file...", file=sys.stderr)
-                if mod_time < start_timestamp:
-                    time_diff = start_timestamp - mod_time
+                if mod_time < effective_start:
+                    time_diff = effective_start - mod_time
                     print(f"xcresult modification time is {time_diff:.2f} seconds older than start time - waiting for newer file...", file=sys.stderr)
         else:
             print(f"No xcresult file found yet - waiting...", file=sys.stderr)
 
-        # Wait a bit before checking again
         time.sleep(1)
 
     return None

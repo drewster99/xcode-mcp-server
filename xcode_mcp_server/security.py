@@ -13,9 +13,15 @@ ALLOWED_FOLDERS: Set[str] = set()
 
 
 def set_allowed_folders(folders: Set[str]):
-    """Set the global allowed folders"""
+    """Set the global allowed folders.
+
+    Paths are resolved through realpath so the stored values always represent
+    the real on-disk target. is_path_allowed assumes ALLOWED_FOLDERS contains
+    resolved paths, so callers that bypass get_allowed_folders still produce
+    correct comparisons.
+    """
     global ALLOWED_FOLDERS
-    ALLOWED_FOLDERS = folders
+    ALLOWED_FOLDERS = {os.path.realpath(f).rstrip("/") for f in folders if f}
 
 
 def get_allowed_folders(command_line_folders: Optional[List[str]] = None) -> Set[str]:
@@ -80,9 +86,16 @@ def get_allowed_folders(command_line_folders: Optional[List[str]] = None) -> Set
             print(f"Warning: Skipping non-directory path: {folder}", file=sys.stderr)
             continue
 
-        # Add to allowed folders
-        allowed_folders.add(folder)
-        print(f"Added allowed folder: {folder}", file=sys.stderr)
+        # Resolve symlinks so subsequent prefix checks compare real paths to real paths.
+        # Otherwise a symlink inside an allowed folder pointing outside it would silently
+        # pass validation and let downstream tools operate on the target.
+        resolved = os.path.realpath(folder).rstrip("/")
+
+        allowed_folders.add(resolved)
+        if resolved != folder:
+            print(f"Added allowed folder: {folder} (resolved: {resolved})", file=sys.stderr)
+        else:
+            print(f"Added allowed folder: {folder}", file=sys.stderr)
 
     return allowed_folders
 
@@ -91,32 +104,27 @@ def is_path_allowed(project_path: str) -> bool:
     """
     Check if a project path is allowed based on the allowed folders list.
     Path must be a subfolder or direct match of an allowed folder.
+
+    Symlinks are resolved before comparison so that a symlink inside an allowed
+    folder pointing outside it does not bypass validation.
     """
     if not project_path:
-        print(f"Debug: Empty project_path provided", file=sys.stderr)
         return False
 
-    # If no allowed folders are specified, nothing is allowed
     if not ALLOWED_FOLDERS:
-        print(f"Debug: ALLOWED_FOLDERS is empty, denying access", file=sys.stderr)
         return False
 
-    # Normalize the path
-    project_path = os.path.abspath(project_path).rstrip("/")
+    # Resolve symlinks in both the path and (already resolved at registration)
+    # the allowed folders. realpath also normalizes and makes absolute, and works
+    # on non-existent paths by resolving only the parents that do exist.
+    resolved = os.path.realpath(project_path).rstrip("/")
 
-    # Check if path is in allowed folders
-    print(f"Debug: Checking normalized project_path: {project_path}", file=sys.stderr)
     for allowed_folder in ALLOWED_FOLDERS:
-        # Direct match
-        if project_path == allowed_folder:
-            print(f"Debug: Direct match to {allowed_folder}", file=sys.stderr)
+        if resolved == allowed_folder:
+            return True
+        if resolved.startswith(allowed_folder + "/"):
             return True
 
-        # Path is a subfolder
-        if project_path.startswith(allowed_folder + "/"):
-            print(f"Debug: Subfolder match to {allowed_folder}", file=sys.stderr)
-            return True
-    print(f"Debug: No match found for {project_path}", file=sys.stderr)
     return False
 
 
@@ -129,7 +137,7 @@ def validate_and_normalize_project_path(project_path: str, function_name: str) -
         function_name: Name of calling function for error messages
 
     Returns:
-        Normalized project path
+        Normalized project path (symlinks resolved)
 
     Raises:
         InvalidParameterError: If validation fails
@@ -138,28 +146,70 @@ def validate_and_normalize_project_path(project_path: str, function_name: str) -
     # Import here to avoid circular dependency
     from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
 
-    # Basic validation
     if not project_path or project_path.strip() == "":
         raise InvalidParameterError("project_path cannot be empty")
 
     project_path = project_path.strip()
 
-    # Verify path ends with .xcodeproj or .xcworkspace
     if not (project_path.endswith('.xcodeproj') or project_path.endswith('.xcworkspace')):
         raise InvalidParameterError("project_path must end with '.xcodeproj' or '.xcworkspace'")
 
-    # Security check
+    # is_path_allowed resolves symlinks internally so the check is against the
+    # real target, not the symlink alias.
     if not is_path_allowed(project_path):
         show_access_denied_notification(f"Access denied: {os.path.basename(project_path)}")
         raise AccessDeniedError(f"Access to path '{project_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
 
-    # Check if the path exists
     if not os.path.exists(project_path):
         show_error_notification(f"Path not found: {os.path.basename(project_path)}")
         raise InvalidParameterError(f"Project path does not exist: {project_path}")
 
-    # Normalize the path to resolve symlinks
     return os.path.realpath(project_path)
+
+
+def validate_and_normalize_directory_path(directory_path: str) -> str:
+    """
+    Validate and normalize a directory path against the allowed-folders policy.
+
+    Symlinks are resolved before the allow-list check (handled by is_path_allowed).
+
+    Args:
+        directory_path: The directory path to validate
+
+    Returns:
+        Normalized directory path (symlinks resolved, no trailing slash)
+
+    Raises:
+        InvalidParameterError: If validation fails or path is not a directory
+        AccessDeniedError: If path access is denied
+    """
+    from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
+
+    if not directory_path or directory_path.strip() == "":
+        raise InvalidParameterError("directory_path cannot be empty")
+
+    directory_path = directory_path.strip()
+
+    if not is_path_allowed(directory_path):
+        show_access_denied_notification(f"Access denied: {directory_path}")
+        raise AccessDeniedError(
+            f"Access to path '{directory_path}' is not allowed. "
+            "Set XCODEMCP_ALLOWED_FOLDERS environment variable."
+        )
+
+    if not os.path.exists(directory_path):
+        show_error_notification(f"Path not found: {directory_path}")
+        raise InvalidParameterError(f"Path does not exist: {directory_path}")
+
+    resolved = os.path.realpath(directory_path).rstrip("/")
+
+    if not os.path.isdir(resolved) and not (
+        resolved.endswith('.xcodeproj') or resolved.endswith('.xcworkspace')
+    ):
+        show_error_notification(f"Not a directory: {resolved}")
+        raise InvalidParameterError(f"Path is not a directory: {resolved}")
+
+    return resolved
 
 
 def validate_parent_for_new_project(parent_path: str, project_name: str) -> str:

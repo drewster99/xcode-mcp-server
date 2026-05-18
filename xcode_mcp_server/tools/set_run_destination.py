@@ -9,6 +9,7 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
+    build_open_and_wait_applescript,
     escape_applescript_string,
     run_applescript,
     show_notification,
@@ -48,22 +49,8 @@ def set_run_destination(
 
     show_notification("Setting Destination", project_name, destination_id)
 
-    script = f'''
-set projectPath to "{escaped_path}"
-set targetDeviceId to "{escaped_dest_id}"
-
-tell application "Xcode"
-    open projectPath
-    set workspaceDoc to first workspace document whose path is projectPath
-
-    repeat 60 times
-        if loaded of workspaceDoc is true then exit repeat
-        delay 0.5
-    end repeat
-    if loaded of workspaceDoc is false then
-        error "Xcode workspace did not load in time."
-    end if
-
+    script = build_open_and_wait_applescript(escaped_path) + f'''
+    set targetDeviceId to "{escaped_dest_id}"
     set dests to run destinations of workspaceDoc
     set foundDest to missing value
     set foundName to ""

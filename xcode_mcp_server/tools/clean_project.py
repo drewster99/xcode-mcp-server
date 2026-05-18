@@ -7,7 +7,13 @@ from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
-from xcode_mcp_server.utils.applescript import escape_applescript_string, run_applescript, show_result_notification, show_error_notification
+from xcode_mcp_server.utils.applescript import (
+    build_open_and_wait_applescript,
+    escape_applescript_string,
+    run_applescript,
+    show_result_notification,
+    show_error_notification,
+)
 
 
 @mcp.tool()
@@ -26,32 +32,11 @@ def clean_project(project_path: str) -> str:
     normalized_path = validate_and_normalize_project_path(project_path, "Cleaning")
     escaped_path = escape_applescript_string(normalized_path)
 
-    # AppleScript to clean the project
-    script = f'''
-    set projectPath to "{escaped_path}"
-
-    tell application "Xcode"
-        open projectPath
-
-        -- Get the workspace document
-        set workspaceDoc to first workspace document whose path is projectPath
-
-        -- Wait for it to load (timeout after ~30 seconds)
-        repeat 60 times
-            if loaded of workspaceDoc is true then exit repeat
-            delay 0.5
-        end repeat
-
-        if loaded of workspaceDoc is false then
-            error "Xcode workspace did not load in time."
-        end if
-
-        -- Clean the workspace
-        clean workspaceDoc
-
-        return "Clean completed successfully"
-    end tell
-    '''
+    script = build_open_and_wait_applescript(escaped_path) + (
+        '    clean workspaceDoc\n'
+        '    return "Clean completed successfully"\n'
+        'end tell\n'
+    )
 
     success, output = run_applescript(script)
 

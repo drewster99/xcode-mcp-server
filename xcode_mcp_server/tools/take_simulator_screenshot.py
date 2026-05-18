@@ -3,9 +3,6 @@
 
 import os
 import sys
-import re
-import time
-import uuid
 import subprocess
 from typing import Optional
 
@@ -13,7 +10,7 @@ from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
-from xcode_mcp_server.utils.screenshot import _get_booted_simulators
+from xcode_mcp_server.utils.screenshot import _get_booted_simulators, get_screenshot_path
 
 
 @mcp.tool()
@@ -49,8 +46,7 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
                     if sim['udid'] == target_udid:
                         target_name = sim['name']
                         break
-            except:
-                # If we can't get the name, continue anyway
+            except Exception:
                 pass
         else:
             # No UDID specified - find first booted simulator
@@ -65,14 +61,7 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
             target_udid = booted_simulators[0]['udid']
             target_name = booted_simulators[0]['name']
 
-        # Create screenshot directory
-        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
-        os.makedirs(screenshot_dir, exist_ok=True)
-
-        # Generate filename with UUID
-        unique_id = uuid.uuid4()
-        filename = f"simulator_{unique_id}.png"
-        screenshot_path = os.path.join(screenshot_dir, filename)
+        screenshot_path = get_screenshot_path("simulator")
 
         print(f"Taking screenshot of '{target_name}' (UDID: {target_udid})", file=sys.stderr)
 

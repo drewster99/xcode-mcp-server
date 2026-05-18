@@ -4,13 +4,21 @@
 import subprocess
 import sys
 import datetime
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 
 # Global notification setting - initialized by CLI
 NOTIFICATIONS_ENABLED = True
 
 # Global notification history - stores all notifications posted
 NOTIFICATION_HISTORY: List[Dict[str, str]] = []
+
+# Number of 0.5-second poll iterations before giving up on waiting for an Xcode
+# workspace document to load.
+WORKSPACE_LOAD_REPEATS = 60
+
+# Maximum time (seconds) to wait for a build or run action to complete in
+# AppleScript polling loops.
+BUILD_TIMEOUT_SECONDS = 600
 
 
 def set_notifications_enabled(enabled: bool):
@@ -44,6 +52,71 @@ def escape_applescript_string(s: str) -> str:
     s = s.replace("\\", "\\\\")
     s = s.replace('"', '\\"')
     return s
+
+
+def build_open_and_wait_applescript(escaped_path: str, escaped_scheme: Optional[str] = None) -> str:
+    """
+    Return the AppleScript prologue that opens an Xcode project, waits for the
+    workspace document to load, and (if a scheme is provided) sets it active.
+
+    The returned snippet starts with `set projectPath to ...`, opens a
+    `tell application "Xcode"` block, and defines `workspaceDoc`. It does NOT
+    close the `tell` block — callers append their action statements and a final
+    `end tell`.
+
+    Args:
+        escaped_path: Project path, already passed through escape_applescript_string.
+        escaped_scheme: Optional scheme name, already escaped. When provided,
+            the snippet also sets the active scheme on the workspace document.
+    """
+    scheme_decl = f'set schemeName to "{escaped_scheme}"\n' if escaped_scheme else ""
+    scheme_setup = (
+        "    set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)\n"
+        if escaped_scheme else ""
+    )
+    return (
+        f'set projectPath to "{escaped_path}"\n'
+        f'{scheme_decl}'
+        f'tell application "Xcode"\n'
+        f'    open projectPath\n'
+        f'    set workspaceDoc to first workspace document whose path is projectPath\n'
+        f'\n'
+        f'    repeat {WORKSPACE_LOAD_REPEATS} times\n'
+        f'        if loaded of workspaceDoc is true then exit repeat\n'
+        f'        delay 0.5\n'
+        f'    end repeat\n'
+        f'    if loaded of workspaceDoc is false then\n'
+        f'        error "Xcode workspace did not load in time."\n'
+        f'    end if\n'
+        f'\n'
+        f'{scheme_setup}'
+    )
+
+
+def build_wait_for_completion_applescript(
+    result_var: str = "actionResult",
+    timeout_seconds: int = BUILD_TIMEOUT_SECONDS,
+) -> str:
+    """
+    Return the AppleScript snippet that polls `<result_var>.completed` until
+    true or the timeout fires.
+
+    Args:
+        result_var: AppleScript variable holding a scheme-action-result.
+        timeout_seconds: Seconds before the loop errors out.
+    """
+    minutes = timeout_seconds // 60
+    return (
+        f'    set buildWaitTime to 0\n'
+        f'    repeat\n'
+        f'        if completed of {result_var} is true then exit repeat\n'
+        f'        if buildWaitTime >= {timeout_seconds} then\n'
+        f'            error "Build timed out after {minutes} minutes"\n'
+        f'        end if\n'
+        f'        delay 0.5\n'
+        f'        set buildWaitTime to buildWaitTime + 0.5\n'
+        f'    end repeat\n'
+    )
 
 
 def run_applescript(script: str) -> Tuple[bool, str]:
@@ -113,8 +186,8 @@ def show_notification(title: str, subtitle: str = None, message: str = None, sou
             script += ' sound name "Frog"'
 
         subprocess.run(['osascript', '-e', script], capture_output=True)
-    except:
-        pass  # Ignore notification errors
+    except Exception:
+        pass
 
 
 def show_error_notification(message: str, details: str = None):

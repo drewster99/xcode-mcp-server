@@ -12,12 +12,13 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
+    build_open_and_wait_applescript,
     escape_applescript_string,
     run_applescript,
     show_notification,
     show_result_notification,
     show_error_notification,
-    show_persistent_alert
+    show_persistent_alert,
 )
 from xcode_mcp_server.utils.xcresult import (
     wait_for_xcresult_after_timestamp,
@@ -63,64 +64,13 @@ def run_project_with_user_interaction(project_path: str,
     scheme_name = scheme if scheme else "active scheme"
     show_notification("Drew's Xcode MCP", subtitle=scheme_name, message=f"Running {project_name}")
 
-    # Build the AppleScript to launch the app
-    if scheme:
-        escaped_scheme = escape_applescript_string(scheme)
-        script = f'''
-        set projectPath to "{escaped_path}"
-        set schemeName to "{escaped_scheme}"
-
-        tell application "Xcode"
-            open projectPath
-
-            -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is projectPath
-
-            -- Wait for it to load
-            repeat 60 times
-                if loaded of workspaceDoc is true then exit repeat
-                delay 0.5
-            end repeat
-
-            if loaded of workspaceDoc is false then
-                error "Xcode workspace did not load in time."
-            end if
-
-            -- Set the active scheme
-            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
-
-            -- Run
-            set actionResult to run workspaceDoc
-
-            return "launched"
-        end tell
-        '''
-    else:
-        script = f'''
-        set projectPath to "{escaped_path}"
-
-        tell application "Xcode"
-            open projectPath
-
-            -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is projectPath
-
-            -- Wait for it to load
-            repeat 60 times
-                if loaded of workspaceDoc is true then exit repeat
-                delay 0.5
-            end repeat
-
-            if loaded of workspaceDoc is false then
-                error "Xcode workspace did not load in time."
-            end if
-
-            -- Run with active scheme
-            set actionResult to run workspaceDoc
-
-            return "launched"
-        end tell
-        '''
+    escaped_scheme = escape_applescript_string(scheme) if scheme else None
+    script = (
+        build_open_and_wait_applescript(escaped_path, escaped_scheme)
+        + '    set actionResult to run workspaceDoc\n'
+        + '    return "launched"\n'
+        + 'end tell\n'
+    )
 
     print(f"Launching app...", file=sys.stderr)
 
@@ -182,7 +132,7 @@ def run_project_with_user_interaction(project_path: str,
             if alert_process:
                 try:
                     alert_process.terminate()
-                except:
+                except OSError:
                     pass
             break
 

@@ -8,9 +8,9 @@ from typing import Optional
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
-from xcode_mcp_server.security import is_path_allowed
+from xcode_mcp_server.security import validate_and_normalize_directory_path
 from xcode_mcp_server.exceptions import AccessDeniedError, InvalidParameterError, XCodeMCPError
-from xcode_mcp_server.utils.applescript import show_access_denied_notification, show_error_notification
+from xcode_mcp_server.utils.applescript import show_error_notification
 
 
 @mcp.tool()
@@ -45,23 +45,7 @@ def get_directory_listing(directory_path: str,
     if max_results > 100:
         max_results = 100
 
-    # Basic validation
-    if not directory_path or directory_path.strip() == "":
-        raise InvalidParameterError("directory_path cannot be empty")
-
-    directory_path = directory_path.strip()
-
-    # Security check
-    if not is_path_allowed(directory_path):
-        show_access_denied_notification(f"Access denied: {directory_path}")
-        raise AccessDeniedError(f"Access to path '{directory_path}' is not allowed. Set XCODEMCP_ALLOWED_FOLDERS environment variable.")
-
-    # Normalize and check path
-    directory_path = os.path.realpath(directory_path)
-
-    if not os.path.exists(directory_path):
-        show_error_notification(f"Path not found: {directory_path}")
-        raise InvalidParameterError(f"Path does not exist: {directory_path}")
+    directory_path = validate_and_normalize_directory_path(directory_path)
 
     if not os.path.isdir(directory_path):
         show_error_notification(f"Not a directory: {directory_path}")

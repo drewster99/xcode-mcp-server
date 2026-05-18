@@ -95,8 +95,8 @@ All specified folders must:
             subprocess.run(['osascript', '-e',
                           'display alert "Drew\'s Xcode MCP Server Error" message "No valid allowed folders found. Check your configuration."'],
                           capture_output=True)
-        except:
-            pass  # Ignore notification errors
+        except Exception:
+            pass
 
         sys.exit(1)
 

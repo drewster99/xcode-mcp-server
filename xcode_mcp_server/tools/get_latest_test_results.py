@@ -56,7 +56,7 @@ def get_latest_test_results(project_path: str) -> str:
                     show_result_notification("All tests PASSED")
                 else:
                     show_error_notification(f"{failed} test{'s' if failed != 1 else ''} FAILED")
-            except:
+            except Exception:
                 pass
 
             return test_results

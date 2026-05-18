@@ -3,9 +3,6 @@
 
 import os
 import sys
-import re
-import time
-import uuid
 import subprocess
 
 from xcode_mcp_server.server import mcp
@@ -16,8 +13,9 @@ from xcode_mcp_server.utils.applescript import (
     escape_applescript_string,
     run_applescript,
     show_result_notification,
-    show_error_notification
+    show_error_notification,
 )
+from xcode_mcp_server.utils.screenshot import get_screenshot_path
 
 
 @mcp.tool()
@@ -77,14 +75,7 @@ def take_xcode_screenshot(project_path: str) -> str:
 
         print(f"Found Xcode window with ID: {window_id}", file=sys.stderr)
 
-        # Create screenshot directory
-        screenshot_dir = "/tmp/xcode-mcp-server/screenshots"
-        os.makedirs(screenshot_dir, exist_ok=True)
-
-        # Generate filename with UUID
-        unique_id = uuid.uuid4()
-        filename = f"xcode_{unique_id}.png"
-        screenshot_path = os.path.join(screenshot_dir, filename)
+        screenshot_path = get_screenshot_path("xcode")
 
         print(f"Taking screenshot of Xcode window for '{workspace_name}'", file=sys.stderr)
 

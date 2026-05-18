@@ -12,12 +12,14 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
+    BUILD_TIMEOUT_SECONDS,
+    build_open_and_wait_applescript,
     escape_applescript_string,
     run_applescript,
     show_notification,
     show_result_notification,
     show_error_notification,
-    show_warning_notification
+    show_warning_notification,
 )
 from xcode_mcp_server.utils.xcresult import (
     wait_for_xcresult_after_timestamp,
@@ -60,64 +62,13 @@ def run_project_until_terminated(project_path: str,
     scheme_name = scheme if scheme else "active scheme"
     show_notification("Drew's Xcode MCP", subtitle=scheme_name, message=f"Running {project_name}")
 
-    # Build the AppleScript to launch the app
-    if scheme:
-        escaped_scheme = escape_applescript_string(scheme)
-        script = f'''
-        set projectPath to "{escaped_path}"
-        set schemeName to "{escaped_scheme}"
-
-        tell application "Xcode"
-            open projectPath
-
-            -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is projectPath
-
-            -- Wait for it to load
-            repeat 60 times
-                if loaded of workspaceDoc is true then exit repeat
-                delay 0.5
-            end repeat
-
-            if loaded of workspaceDoc is false then
-                error "Xcode workspace did not load in time."
-            end if
-
-            -- Set the active scheme
-            set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
-
-            -- Run
-            set actionResult to run workspaceDoc
-
-            return "launched"
-        end tell
-        '''
-    else:
-        script = f'''
-        set projectPath to "{escaped_path}"
-
-        tell application "Xcode"
-            open projectPath
-
-            -- Get the workspace document
-            set workspaceDoc to first workspace document whose path is projectPath
-
-            -- Wait for it to load
-            repeat 60 times
-                if loaded of workspaceDoc is true then exit repeat
-                delay 0.5
-            end repeat
-
-            if loaded of workspaceDoc is false then
-                error "Xcode workspace did not load in time."
-            end if
-
-            -- Run with active scheme
-            set actionResult to run workspaceDoc
-
-            return "launched"
-        end tell
-        '''
+    escaped_scheme = escape_applescript_string(scheme) if scheme else None
+    script = (
+        build_open_and_wait_applescript(escaped_path, escaped_scheme)
+        + '    set actionResult to run workspaceDoc\n'
+        + '    return "launched"\n'
+        + 'end tell\n'
+    )
 
     print(f"Launching app...", file=sys.stderr)
 
@@ -132,10 +83,9 @@ def run_project_until_terminated(project_path: str,
         show_error_notification("Failed to launch app", project_name)
         raise XCodeMCPError(f"Launch failed: {output}")
 
-    print(f"App launched, polling for termination (up to 10 minutes)...", file=sys.stderr)
+    print(f"App launched, polling for termination (up to {BUILD_TIMEOUT_SECONDS // 60} minutes)...", file=sys.stderr)
 
-    # Poll every 2 seconds for up to 10 minutes (600 seconds)
-    timeout = 600
+    timeout = BUILD_TIMEOUT_SECONDS
     elapsed = 0
     app_terminated = False
 
@@ -162,8 +112,9 @@ def run_project_until_terminated(project_path: str,
 
     # If still running after timeout, force-stop
     if not app_terminated:
-        print(f"App did not terminate within 10 minutes, force-stopping...", file=sys.stderr)
-        show_warning_notification("App timeout (10 min)", "Force-stopping app")
+        minutes = BUILD_TIMEOUT_SECONDS // 60
+        print(f"App did not terminate within {minutes} minutes, force-stopping...", file=sys.stderr)
+        show_warning_notification(f"App timeout ({minutes} min)", "Force-stopping app")
 
         stop_script = f'''
         set projectPath to "{escaped_path}"

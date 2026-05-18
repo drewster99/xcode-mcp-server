@@ -12,12 +12,13 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError
 from xcode_mcp_server.utils.applescript import (
+    BUILD_TIMEOUT_SECONDS,
     escape_applescript_string,
     run_applescript,
     show_notification,
     show_result_notification,
     show_error_notification,
-    show_warning_notification
+    show_warning_notification,
 )
 from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_results_from_xcresult
 
@@ -195,9 +196,8 @@ def run_project_tests(project_path: str,
     escaped_path = escape_applescript_string(project_path)
     test_command = 'test workspaceDoc'
 
-    # Build the wait section with 10 minute (600 second) timeout
     wait_section = f'''set waitTime to 0
-    repeat while waitTime < 600
+    repeat while waitTime < {BUILD_TIMEOUT_SECONDS}
         if completed of testResult is true then
             exit repeat
         end if
@@ -335,9 +335,10 @@ end tell
     output_lines = []
 
     if not completed:
-        output_lines.append(f"⏳ Tests did not complete within 10 minutes")
+        minutes = BUILD_TIMEOUT_SECONDS // 60
+        output_lines.append(f"⏳ Tests did not complete within {minutes} minutes")
         output_lines.append(f"Status: {status}")
-        show_warning_notification(f"Tests timeout (10 min)")
+        show_warning_notification(f"Tests timeout ({minutes} min)")
         return '\n'.join(output_lines)
 
     # If tests completed, get detailed results from xcresult
@@ -362,7 +363,7 @@ end tell
                     show_result_notification("All tests PASSED")
                 else:
                     show_error_notification(f"{failed} test{'s' if failed != 1 else ''} FAILED")
-            except:
+            except Exception:
                 pass
 
             # Return the parsed JSON

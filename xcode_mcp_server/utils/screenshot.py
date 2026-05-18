@@ -2,11 +2,48 @@
 """Screenshot and window management utilities"""
 
 import os
-import sys
 import subprocess
 import tempfile
+import time
+import uuid
 
 from xcode_mcp_server.exceptions import XCodeMCPError
+
+# Screenshots are written to a per-user cache directory so they are not
+# world-readable like /tmp would be. Files older than the retention window are
+# pruned on each call to keep the directory bounded without an external cron.
+SCREENSHOT_DIR = os.path.expanduser("~/Library/Caches/xcode-mcp-server/screenshots")
+SCREENSHOT_RETENTION_SECONDS = 24 * 60 * 60
+
+
+def _prune_old_screenshots(directory: str, retention_seconds: int) -> None:
+    """Delete .png files in `directory` older than `retention_seconds`."""
+    cutoff = time.time() - retention_seconds
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return
+    for name in entries:
+        if not name.endswith('.png'):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+        except OSError:
+            continue
+
+
+def get_screenshot_path(prefix: str) -> str:
+    """
+    Return a unique path inside the screenshot cache directory.
+
+    Ensures the directory exists and prunes screenshots older than
+    SCREENSHOT_RETENTION_SECONDS so the cache does not grow without bound.
+    """
+    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+    _prune_old_screenshots(SCREENSHOT_DIR, SCREENSHOT_RETENTION_SECONDS)
+    return os.path.join(SCREENSHOT_DIR, f"{prefix}_{uuid.uuid4()}.png")
 
 
 def _get_booted_simulators():
@@ -119,7 +156,7 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
         # Clean up temp file
         try:
             os.unlink(temp_file)
-        except:
+        except OSError:
             pass
 
     # Check for error

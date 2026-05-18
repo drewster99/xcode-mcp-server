@@ -12,12 +12,15 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
+    BUILD_TIMEOUT_SECONDS,
+    build_open_and_wait_applescript,
+    build_wait_for_completion_applescript,
     escape_applescript_string,
     run_applescript,
     show_notification,
     show_result_notification,
     show_error_notification,
-    show_warning_notification
+    show_warning_notification,
 )
 from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
 from xcode_mcp_server.utils.build_log_parser import (
@@ -239,102 +242,18 @@ def build_project(project_path: str,
     scheme_name = scheme if scheme else "active scheme"
     show_notification("Drew's Xcode MCP", subtitle=project_name, message=f"Building {scheme_name}")
 
-    # Build the AppleScript
-    if scheme:
-        # Use provided scheme
-        escaped_scheme = escape_applescript_string(scheme)
-        script = f'''
-set projectPath to "{escaped_path}"
-set schemeName to "{escaped_scheme}"
-
-tell application "Xcode"
-        -- 1. Open the project file
-        open projectPath
-
-        -- 2. Get the workspace document
-        set workspaceDoc to first workspace document whose path is projectPath
-
-        -- 3. Wait for it to load (timeout after ~30 seconds)
-        repeat 60 times
-                if loaded of workspaceDoc is true then exit repeat
-                delay 0.5
-        end repeat
-
-        if loaded of workspaceDoc is false then
-                error "Xcode workspace did not load in time."
-        end if
-
-        -- 4. Set the active scheme
-        set active scheme of workspaceDoc to (first scheme of workspaceDoc whose name is schemeName)
-
-        -- 5. Build
-        set actionResult to build workspaceDoc
-
-        -- 6. Wait for completion (with 10 minute timeout)
-        set buildWaitTime to 0
-        repeat
-                if completed of actionResult is true then exit repeat
-                if buildWaitTime >= 600 then
-                        error "Build timed out after 10 minutes"
-                end if
-                delay 0.5
-                set buildWaitTime to buildWaitTime + 0.5
-        end repeat
-
-        -- 7. Return status prefix + build log (always, to capture warnings even on success)
-        set buildStatus to "unknown"
-        try
-                set buildStatus to status of actionResult as string
-        end try
-        return "BUILD_STATUS:" & buildStatus & "
-" & build log of actionResult
-end tell
-    '''
-    else:
-        # Use active scheme
-        script = f'''
-set projectPath to "{escaped_path}"
-
-tell application "Xcode"
-        -- 1. Open the project file
-        open projectPath
-
-        -- 2. Get the workspace document
-        set workspaceDoc to first workspace document whose path is projectPath
-
-        -- 3. Wait for it to load (timeout after ~30 seconds)
-        repeat 60 times
-                if loaded of workspaceDoc is true then exit repeat
-                delay 0.5
-        end repeat
-
-        if loaded of workspaceDoc is false then
-                error "Xcode workspace did not load in time."
-        end if
-
-        -- 4. Build with current active scheme
-        set actionResult to build workspaceDoc
-
-        -- 5. Wait for completion (with 10 minute timeout)
-        set buildWaitTime to 0
-        repeat
-                if completed of actionResult is true then exit repeat
-                if buildWaitTime >= 600 then
-                        error "Build timed out after 10 minutes"
-                end if
-                delay 0.5
-                set buildWaitTime to buildWaitTime + 0.5
-        end repeat
-
-        -- 6. Return status prefix + build log (always, to capture warnings even on success)
-        set buildStatus to "unknown"
-        try
-                set buildStatus to status of actionResult as string
-        end try
-        return "BUILD_STATUS:" & buildStatus & "
-" & build log of actionResult
-end tell
-    '''
+    escaped_scheme = escape_applescript_string(scheme) if scheme else None
+    script = (
+        build_open_and_wait_applescript(escaped_path, escaped_scheme)
+        + '    set actionResult to build workspaceDoc\n'
+        + build_wait_for_completion_applescript("actionResult", BUILD_TIMEOUT_SECONDS)
+        + '    set buildStatus to "unknown"\n'
+        + '    try\n'
+        + '        set buildStatus to status of actionResult as string\n'
+        + '    end try\n'
+        + '    return "BUILD_STATUS:" & buildStatus & "\n" & build log of actionResult\n'
+        + 'end tell\n'
+    )
 
     success, output = run_applescript(script)
 

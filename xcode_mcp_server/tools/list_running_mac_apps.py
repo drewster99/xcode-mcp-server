@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """list_running_mac_apps tool - List running macOS applications"""
 
-import sys
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -19,11 +18,12 @@ def list_running_mac_apps() -> str:
         and status flags (frontmost/visible/hidden).
     """
     show_notification("Drew's Xcode MCP", message="Listing running macOS applications")
-    print(f"DEBUG: listing running... doing applescript", file=sys.stderr)
 
     try:
-        # Use AppleScript to get running applications
+        # AppleScript joins records with US (ASCII 0x1f) instead of the default
+        # ", " so app names containing a comma or comma-space parse correctly.
         script = '''
+        set recordSep to (ASCII character 31)
         tell application "System Events"
             set appList to {}
             set runningApps to every application process
@@ -34,27 +34,27 @@ def list_running_mac_apps() -> str:
                 set appPID to unix id of anApp
                 set appFrontmost to frontmost of anApp
                 set appVisible to visible of anApp
-                set appHidden to not appVisible
 
                 -- Format as tab-separated values for easy parsing
                 set appInfo to appName & tab & appBundleID & tab & appPID & tab & appFrontmost & tab & appVisible
                 set end of appList to appInfo
             end repeat
 
-            return appList
+            set AppleScript's text item delimiters to recordSep
+            set joinedOutput to appList as string
+            set AppleScript's text item delimiters to ""
+            return joinedOutput
         end tell
         '''
 
         success, output = run_applescript(script)
 
-        print(f"DEBUG: applescript done", file=sys.stderr)
         if not success:
             show_error_notification("Failed to list running apps", output)
             raise XCodeMCPError(f"Failed to list running apps: {output}")
 
-        # Parse the output
         apps = []
-        lines = output.strip().split(', ')
+        lines = output.strip().split('\x1f')
 
         for line in lines:
             if not line.strip():
