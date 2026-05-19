@@ -116,12 +116,14 @@ def _filter_project_results(paths: list[str], search_paths: list[str] = None, ma
 
         # Filter 5: Check depth limit if specified
         if max_depth is not None and search_paths:
-            # Calculate minimum depth from any search path
+            # Calculate minimum depth from any search path.
+            # Use realpath on both sides so symlinked search paths still match
+            # the resolved paths returned by mdfind.
             min_depth = None
-            abs_path = os.path.abspath(path)
+            abs_path = os.path.realpath(path)
 
             for search_path in search_paths:
-                abs_search = os.path.abspath(search_path)
+                abs_search = os.path.realpath(search_path)
                 if abs_path.startswith(abs_search):
                     # Calculate depth from this search path
                     # Depth 0 = directly in search path, depth 1 = one level down, etc.
