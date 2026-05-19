@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
@@ -25,8 +26,15 @@ from xcode_mcp_server.utils.applescript import (
 from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
 from xcode_mcp_server.utils.build_log_parser import (
     find_derived_data_for_project,
-    aggregate_warnings_since_clean
+    aggregate_warnings_since_clean,
+    snapshot_build_uuids,
+    wait_for_new_build_uuid,
 )
+
+# How long to wait for our build's entry to appear in LogStoreManifest.plist
+# after AppleScript reports the build action complete. Xcode usually finalizes
+# the xcactivitylog + manifest within a few hundred ms; this is a generous cap.
+MANIFEST_ENTRY_WAIT_SECONDS = 10.0
 
 
 def _supplement_with_xcactivitylog_warnings(
@@ -34,7 +42,9 @@ def _supplement_with_xcactivitylog_warnings(
     project_path: str,
     include_warnings: Optional[bool],
     regex_filter: Optional[str],
-    max_lines: int
+    max_lines: int,
+    pre_build_uuids: Optional[set] = None,
+    unix_start_time: Optional[float] = None,
 ) -> str:
     """
     Supplement build results with comprehensive warnings from xcactivitylog files.
@@ -45,6 +55,10 @@ def _supplement_with_xcactivitylog_warnings(
 
     xcactivitylog is the primary source. Any errors or warnings from the AppleScript
     build log not already present in xcactivitylog are preserved as supplements.
+
+    pre_build_uuids and unix_start_time are used to wait for this build's
+    manifest entry to be written before reading. Without them, aggregation can
+    race against Xcode and return stale warnings from a previous build.
     """
     from xcode_mcp_server.utils.xcresult import BUILD_WARNINGS_FORCED, BUILD_WARNINGS_ENABLED
 
@@ -66,6 +80,24 @@ def _supplement_with_xcactivitylog_warnings(
 
         if not os.path.exists(manifest_path):
             return errors_json
+
+        # Wait for our build's manifest entry to appear so aggregation sees
+        # the current build's compiled-files set and warnings, not stale ones
+        # from the prior build. Falls through to the existing behavior on
+        # timeout — degraded but not broken.
+        if pre_build_uuids is not None and unix_start_time is not None:
+            our_uuid = wait_for_new_build_uuid(
+                manifest_path,
+                pre_build_uuids,
+                unix_start_time,
+                timeout_seconds=MANIFEST_ENTRY_WAIT_SECONDS,
+            )
+            if our_uuid is None:
+                print(
+                    f"Warning: timed out waiting for manifest entry after build "
+                    f"of {project_path}; aggregated warnings may be stale.",
+                    file=sys.stderr,
+                )
 
         xcactivity_result = aggregate_warnings_since_clean(manifest_path, logs_dir)
         xcactivity_items = xcactivity_result.get('aggregated_warnings', [])
@@ -255,6 +287,16 @@ def build_project(project_path: str,
         + 'end tell\n'
     )
 
+    # Snapshot the manifest's build UUIDs and capture our start time right
+    # before triggering the build, so we can later identify the entry our
+    # build creates and avoid racing against Xcode's log finalization.
+    pre_build_uuids = set()
+    unix_start_time = time.time()
+    derived_data_path = find_derived_data_for_project(normalized_path)
+    if derived_data_path:
+        manifest_path = os.path.join(derived_data_path, "Logs", "Build", "LogStoreManifest.plist")
+        pre_build_uuids = snapshot_build_uuids(manifest_path)
+
     success, output = run_applescript(script)
 
     if success:
@@ -277,7 +319,8 @@ def build_project(project_path: str,
         # Supplement with comprehensive warnings from xcactivitylog files
         # (AppleScript build log only has warnings for files recompiled in this build)
         errors_output = _supplement_with_xcactivitylog_warnings(
-            errors_output, normalized_path, include_warnings, regex_filter, max_lines
+            errors_output, normalized_path, include_warnings, regex_filter, max_lines,
+            pre_build_uuids=pre_build_uuids, unix_start_time=unix_start_time,
         )
 
         # Parse JSON to show appropriate notification

@@ -3,10 +3,26 @@
 
 import os
 import sys
+import time
 import gzip
 import re
 import plistlib
 from typing import List, Dict, Set, Tuple, Optional
+
+# Seconds between the Unix epoch (1970-01-01) and the Cocoa/CFAbsoluteTime
+# epoch (2001-01-01). Xcode's LogStoreManifest.plist stores timeStartedRecording
+# in CFAbsoluteTime — subtract this offset from time.time() to compare.
+CF_EPOCH_OFFSET = 978307200.0
+
+# Source-file extensions we recognize in xcactivitylog warnings/errors and
+# compile records. Ordered longest-first so the regex alternation prefers
+# .mm over .m, .cpp over .c, etc.
+_SOURCE_EXTS = (
+    'swift', 'metal',
+    'mm', 'cpp', 'cxx', 'cc', 'hpp',
+    'm', 'c', 'h',
+)
+_SOURCE_EXT_ALT = '|'.join(_SOURCE_EXTS)
 
 
 def parse_manifest_plist(manifest_path: str) -> List[Dict]:
@@ -70,12 +86,45 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
     warnings = []
     compiled_files = set()
 
-    # Regex patterns - more precise to avoid binary data
-    # Match Swift file paths followed by line:column: warning/error: message
-    # Use word boundary and require the message to end at newline or binary boundary
-    warning_pattern = re.compile(r'(/[a-zA-Z0-9_/.-]+\.swift):(\d+):(\d+): warning: ([^\n\x00-\x1f]+)')
-    error_pattern = re.compile(r'(/[a-zA-Z0-9_/.-]+\.swift):(\d+):(\d+): error: ([^\n\x00-\x1f]+)')
-    compile_pattern = re.compile(r'SwiftCompile normal \w+ (/[a-zA-Z0-9_/.-]+\.swift)')
+    # Path char class: any printable byte except control bytes, the U+FFFD
+    # replacement character (binary bytes after errors='replace' decode), the
+    # path-list/colon separators, and a few characters Xcode's log format uses
+    # as field separators between the path and following metadata.
+    # This still allows spaces, parentheses inside paths, etc., because we
+    # anchor the end of the match to a known terminator below.
+    path_char = r'[^\r\n\x00-\x1f�]'
+
+    # Warning/error lines:
+    #   /abs/path/to/File.ext:LINE:COL: warning|error: message
+    # The non-greedy {path}+? combined with the literal `.ext:digits:digits:`
+    # naturally terminates the path at the right place even when it contains
+    # spaces. Limit the message to non-control characters so we don't slurp
+    # binary trailing bytes.
+    warning_pattern = re.compile(
+        rf'(/{path_char}+?\.(?:{_SOURCE_EXT_ALT})):(\d+):(\d+): warning: ([^\n\r\x00-\x08\x0b-\x1f�]+)'
+    )
+    error_pattern = re.compile(
+        rf'(/{path_char}+?\.(?:{_SOURCE_EXT_ALT})):(\d+):(\d+): error: ([^\n\r\x00-\x08\x0b-\x1f�]+)'
+    )
+
+    # SwiftCompile lines:
+    #   SwiftCompile normal <arch> /abs/path/to/File.swift (in target '...' from project '...')
+    # The path ends at " (in target" or at end-of-line / control byte.
+    swift_compile_pattern = re.compile(
+        rf'SwiftCompile normal \S+ (/{path_char}+?\.swift)(?= \(in target|\s*[\r\n]|\s*$)'
+    )
+
+    # CompileC / CompileCpp / CompileObjC / CompileObjCpp / CompileMetalFile:
+    # Format starts with the object-file path then a space then the source path:
+    #   CompileC <output>.o <source>.m normal arm64 objective-c ...
+    #   CompileMetalFile <source>.metal ...
+    # We want the SOURCE path, which is the last filename-with-known-extension.
+    cc_compile_pattern = re.compile(
+        rf'Compile(?:C|Cpp|ObjC|ObjCpp) \S+\.o (/{path_char}+?\.(?:m|mm|c|cc|cpp|cxx))(?= \(in target|\s+normal\s|\s+[a-z]|\s*[\r\n]|\s*$)'
+    )
+    metal_compile_pattern = re.compile(
+        rf'CompileMetalFile (/{path_char}+?\.metal)(?= \(in target|\s*[\r\n]|\s*$)'
+    )
 
     try:
         with gzip.open(log_path, 'rb') as f:
@@ -114,10 +163,13 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
                     'type': 'error'
                 })
 
-            # Extract compiled files
-            for match in compile_pattern.finditer(text):
-                file_path = match.group(1)
-                compiled_files.add(file_path)
+            # Extract compiled files (Swift, ObjC/C/C++, Metal)
+            for match in swift_compile_pattern.finditer(text):
+                compiled_files.add(match.group(1))
+            for match in cc_compile_pattern.finditer(text):
+                compiled_files.add(match.group(1))
+            for match in metal_compile_pattern.finditer(text):
+                compiled_files.add(match.group(1))
 
     except Exception as e:
         print(f"Error parsing xcactivitylog {log_path}: {e}", file=sys.stderr)
@@ -287,6 +339,95 @@ def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
         'files_with_multiple_builds': files_with_multiple_builds,
         'builds_analyzed': builds_analyzed
     }
+
+
+def snapshot_build_uuids(manifest_path: str) -> Set[str]:
+    """
+    Return the set of uniqueIdentifier values currently in the manifest.
+
+    Used to detect which manifest entries already existed before kicking off
+    a build, so we can spot the new entry our build creates.
+
+    Returns an empty set if the manifest doesn't exist (first-ever build) or
+    can't be parsed — callers treat that as "no snapshot, accept any new entry".
+    """
+    if not os.path.exists(manifest_path):
+        return set()
+    try:
+        with open(manifest_path, 'rb') as f:
+            plist_data = plistlib.load(f)
+        return set(plist_data.get('logs', {}).keys())
+    except Exception as e:
+        print(f"Warning: failed to snapshot manifest {manifest_path}: {e}", file=sys.stderr)
+        return set()
+
+
+def wait_for_new_build_uuid(
+    manifest_path: str,
+    before_uuids: Set[str],
+    unix_start_time: float,
+    timeout_seconds: float = 10.0,
+    poll_interval: float = 0.25,
+) -> Optional[str]:
+    """
+    Poll the manifest until a new build entry (not in before_uuids) appears
+    that started at or after unix_start_time.
+
+    The timestamp lower bound guards against the rare case where a user
+    triggers a build via the Xcode UI between our snapshot and our wait;
+    such an entry would not be in before_uuids but would have a
+    timeStartedRecording older than our start.
+
+    Entries whose title indicates a non-build action (currently: "Clean ...")
+    are ignored, since the manifest records cleans alongside builds.
+
+    Args:
+        manifest_path: Path to LogStoreManifest.plist
+        before_uuids: Set returned by snapshot_build_uuids() before the build started
+        unix_start_time: time.time() captured before AppleScript was invoked
+        timeout_seconds: Maximum time to wait for the new entry
+        poll_interval: Sleep between polls
+
+    Returns:
+        The uniqueIdentifier of our build, or None on timeout.
+    """
+    # Filesystem mtimes and CFAbsoluteTime conversion both have sub-second
+    # granularity — allow a small slack so a manifest entry written in the
+    # same wall-clock second as our start isn't rejected as "too old".
+    timestamp_slack_seconds = 1.0
+    effective_start_cf = unix_start_time - CF_EPOCH_OFFSET - timestamp_slack_seconds
+
+    deadline = time.time() + timeout_seconds
+
+    while True:
+        try:
+            if os.path.exists(manifest_path):
+                with open(manifest_path, 'rb') as f:
+                    plist_data = plistlib.load(f)
+
+                for log_uuid, entry in plist_data.get('logs', {}).items():
+                    if log_uuid in before_uuids:
+                        continue
+
+                    title = entry.get('title', '')
+                    # Build entries start with "Build " in Xcode's manifest;
+                    # Clean entries start with "Clean ". Skip anything that
+                    # doesn't look like a build action.
+                    if not title.startswith('Build'):
+                        continue
+
+                    started = entry.get('timeStartedRecording', 0)
+                    if not isinstance(started, (int, float)):
+                        continue
+
+                    if started >= effective_start_cf:
+                        return log_uuid
+        except Exception as e:
+            print(f"Warning: error polling manifest {manifest_path}: {e}", file=sys.stderr)
+
+        if time.time() >= deadline:
+            return None
+        time.sleep(poll_interval)
 
 
 def find_derived_data_for_project(project_path: str) -> Optional[str]:
