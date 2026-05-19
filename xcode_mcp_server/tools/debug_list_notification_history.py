@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """debug_list_notification_history tool - List all notifications that have been posted"""
 
-import subprocess
-import tempfile
 import os
+import subprocess
+import sys
+
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.utils.applescript import get_notification_history
+
+# Stable path so repeated invocations overwrite a single file instead of
+# leaking a fresh /tmp file each call.
+NOTIFICATION_HISTORY_FILE = "/tmp/xcode-mcp-server/notification-history.txt"
 
 
 @mcp.tool()
@@ -38,16 +43,25 @@ def debug_list_notification_history() -> str:
 
         result = "\n".join(lines)
 
-    # Also show in TextEdit (scrollable)
+    # Also show in TextEdit (scrollable). Write to a stable path so repeated
+    # invocations don't leak temp files.
     try:
-        # Write to temporary file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, prefix='xcode-mcp-notifications-') as f:
+        os.makedirs(os.path.dirname(NOTIFICATION_HISTORY_FILE), exist_ok=True)
+        with open(NOTIFICATION_HISTORY_FILE, 'w') as f:
             f.write(result)
-            temp_path = f.name
+    except OSError as e:
+        print(f"warn: failed to write {NOTIFICATION_HISTORY_FILE}: {e}", file=sys.stderr)
+        return result
 
-        # Open in TextEdit
-        subprocess.run(['open', '-a', 'TextEdit', temp_path], capture_output=True)
-    except Exception as e:
-        pass  # Ignore display errors
+    try:
+        subprocess.run(
+            ['open', '-a', 'TextEdit', NOTIFICATION_HISTORY_FILE],
+            capture_output=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        print("warn: `open -a TextEdit` timed out", file=sys.stderr)
+    except FileNotFoundError:
+        print("warn: `open` binary not found on PATH", file=sys.stderr)
 
     return result

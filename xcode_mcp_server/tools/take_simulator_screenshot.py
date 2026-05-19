@@ -46,8 +46,8 @@ def take_simulator_screenshot(udid: Optional[str] = None) -> str:
                     if sim['udid'] == target_udid:
                         target_name = sim['name']
                         break
-            except Exception:
-                pass
+            except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+                print(f"warn: friendly-name lookup for {target_udid} failed: {e}", file=sys.stderr)
         else:
             # No UDID specified - find first booted simulator
             booted_simulators = _get_booted_simulators()

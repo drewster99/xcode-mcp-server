@@ -5,6 +5,7 @@ import glob
 import json
 import os
 import subprocess
+import sys
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
@@ -37,19 +38,39 @@ def _decode_active_destinations(xcuserstate_path: str) -> dict:
     swift_script = os.path.join(os.path.dirname(script_dir), 'utils', 'decode_active_destination.swift')
 
     if not os.path.exists(swift_script):
-        return {}
+        raise XCodeMCPError(
+            f"Helper script not found: {swift_script}. The package may be "
+            f"installed incompletely."
+        )
 
     try:
         result = subprocess.run(
             ['swift', swift_script, xcuserstate_path],
             capture_output=True, text=True, timeout=10,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout.strip())
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
-        pass
+    except subprocess.TimeoutExpired:
+        print(f"warn: decode_active_destination.swift timed out", file=sys.stderr)
+        return {}
+    except FileNotFoundError:
+        print("warn: `swift` binary not found on PATH", file=sys.stderr)
+        return {}
 
-    return {}
+    if result.returncode != 0:
+        print(
+            f"warn: decode_active_destination.swift exited {result.returncode}: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return {}
+
+    if not result.stdout.strip():
+        return {}
+
+    try:
+        return json.loads(result.stdout.strip())
+    except json.JSONDecodeError as e:
+        print(f"warn: decode_active_destination.swift produced invalid JSON: {e}", file=sys.stderr)
+        return {}
 
 
 def _get_active_scheme_from_xcuserstate(project_path: str) -> str:
@@ -66,24 +87,40 @@ def _get_active_scheme_from_xcuserstate(project_path: str) -> str:
             ['plutil', '-convert', 'json', '-o', '-', plist_path],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            scheme_state = data.get("SchemeUserState", {})
-            # Keys look like "SchemeName.xcscheme_^#shared#^_" or "SchemeName.xcscheme"
-            # Find the one with lowest orderHint (or just return the first)
-            best_scheme = ""
-            best_order = float('inf')
-            for key, value in scheme_state.items():
-                # Strip the suffix to get scheme name
-                scheme_name = key.split('.xcscheme')[0]
-                order = value.get('orderHint', 999)
-                if order < best_order:
-                    best_order = order
-                    best_scheme = scheme_name
-            return best_scheme
-    except Exception:
-        pass
-    return ""
+    except subprocess.TimeoutExpired:
+        print(f"warn: plutil timed out reading {plist_path}", file=sys.stderr)
+        return ""
+    except FileNotFoundError:
+        print("warn: `plutil` binary not found on PATH", file=sys.stderr)
+        return ""
+
+    if result.returncode != 0:
+        print(
+            f"warn: plutil exited {result.returncode} for {plist_path}: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return ""
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        print(f"warn: plutil produced invalid JSON for {plist_path}: {e}", file=sys.stderr)
+        return ""
+
+    scheme_state = data.get("SchemeUserState", {})
+    # Keys look like "SchemeName.xcscheme_^#shared#^_" or "SchemeName.xcscheme"
+    # Find the one with lowest orderHint (or just return the first)
+    best_scheme = ""
+    best_order = float('inf')
+    for key, value in scheme_state.items():
+        # Strip the suffix to get scheme name
+        scheme_name = key.split('.xcscheme')[0]
+        order = value.get('orderHint', 999)
+        if order < best_order:
+            best_order = order
+            best_scheme = scheme_name
+    return best_scheme
 
 
 def _lookup_simulator_info(udid: str) -> tuple:
@@ -96,20 +133,32 @@ def _lookup_simulator_info(udid: str) -> tuple:
             ['xcrun', 'simctl', 'list', 'devices', udid],
             capture_output=True, text=True, timeout=5,
         )
-        if result.returncode == 0:
-            current_os = ""
-            for line in result.stdout.split('\n'):
-                stripped = line.strip()
-                # Track OS version from section headers like "-- iOS 26.4 --"
-                if stripped.startswith('-- ') and stripped.endswith(' --'):
-                    current_os = stripped[3:-3]  # e.g. "iOS 26.4"
-                elif udid in stripped:
-                    paren_idx = stripped.find('(')
-                    if paren_idx > 0:
-                        name = stripped[:paren_idx].strip()
-                        return (name, current_os)
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        print(f"warn: simctl list devices timed out for {udid}", file=sys.stderr)
+        return ("", "")
+    except FileNotFoundError:
+        print("warn: `xcrun` binary not found on PATH", file=sys.stderr)
+        return ("", "")
+
+    if result.returncode != 0:
+        print(
+            f"warn: simctl list devices exited {result.returncode}: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return ("", "")
+
+    current_os = ""
+    for line in result.stdout.split('\n'):
+        stripped = line.strip()
+        # Track OS version from section headers like "-- iOS 26.4 --"
+        if stripped.startswith('-- ') and stripped.endswith(' --'):
+            current_os = stripped[3:-3]  # e.g. "iOS 26.4"
+        elif udid in stripped:
+            paren_idx = stripped.find('(')
+            if paren_idx > 0:
+                name = stripped[:paren_idx].strip()
+                return (name, current_os)
     return ("", "")
 
 
@@ -170,8 +219,10 @@ def get_active_run_destination(
     if not dest_string:
         raise XCodeMCPError("No active run destination found in workspace state.")
 
-    # Parse the destination string (format: "UDID_platform_arch")
-    parts = dest_string.split('_')
+    # Parse the destination string (format: "UDID_platform_arch"). Architecture
+    # can itself contain underscores (e.g. watchOS uses `arm64_32`), so split
+    # with maxsplit=2 to preserve the full architecture string.
+    parts = dest_string.split('_', 2)
     if len(parts) < 3:
         raise XCodeMCPError(f"Unexpected destination format: {dest_string}")
 

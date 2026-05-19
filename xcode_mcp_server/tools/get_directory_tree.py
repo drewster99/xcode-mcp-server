@@ -10,6 +10,27 @@ from xcode_mcp_server.security import validate_and_normalize_directory_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_error_notification
 
+# Directories whose contents we never expand in the tree view. These are
+# typically large build/dependency caches that bloat the output without
+# adding information the LLM needs.
+SKIP_DIR_NAMES = frozenset([
+    '.build',
+    'build',
+    'DerivedData',
+    'node_modules',
+    'venv',
+    '.venv',
+    '__pycache__',
+    'Pods',
+    '.cocoapods',
+    '.swiftpm',
+    'Carthage',
+])
+
+# Hard ceiling on lines returned. Past this we truncate with a note so the
+# response can't blow up token usage on pathological repos.
+MAX_TREE_LINES = 5000
+
 
 @mcp.tool()
 @apply_config
@@ -86,7 +107,7 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
         # If it's a directory, recurse into it (with restrictions)
         if os.path.isdir(path):
             # Skip certain directories
-            if os.path.basename(path) in ['.build', 'build', 'DerivedData']:
+            if os.path.basename(path) in SKIP_DIR_NAMES:
                 return lines
 
             # Don't recurse into .xcodeproj or .xcworkspace directories
@@ -134,5 +155,14 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     except Exception as e:
         raise XCodeMCPError(f"Error building directory tree for {directory_path}: {str(e)}")
 
+    truncation_note = ""
+    if len(hierarchy_lines) > MAX_TREE_LINES:
+        original = len(hierarchy_lines)
+        hierarchy_lines = hierarchy_lines[:MAX_TREE_LINES]
+        truncation_note = (
+            f"\n\n[Truncated: showing {MAX_TREE_LINES} of {original} lines. "
+            f"Lower max_depth or call get_directory_listing on a subdirectory.]"
+        )
+
     tree_output = '\n'.join(hierarchy_lines)
-    return tree_output + "\n\nUse `get_directory_listing` to see files and details for a specific directory."
+    return tree_output + truncation_note + "\n\nUse `get_directory_listing` to see files and details for a specific directory."

@@ -4,6 +4,7 @@
 import os
 import re
 import subprocess
+import sys
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
@@ -65,7 +66,8 @@ def list_project_tests(project_path: str) -> str:
                                     bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}Tests"
 
                                 tests.append(f"{bundle}/{class_name}/{method}")
-                    except Exception:
+                    except (OSError, UnicodeDecodeError) as e:
+                        print(f"warn: failed to parse test file {file_path}: {e}", file=sys.stderr)
                         continue
 
             if tests:

@@ -225,8 +225,11 @@ def _supplement_with_xcactivitylog_warnings(
 
         return json.dumps(result)
 
-    except Exception as e:
-        print(f"Debug: xcactivitylog supplement failed: {e}", file=sys.stderr)
+    except (OSError, json.JSONDecodeError, KeyError) as e:
+        # I/O failures, malformed JSON, or missing expected keys — degrade
+        # gracefully and return the un-supplemented result. Programming errors
+        # (AttributeError, TypeError) propagate so they're visible.
+        print(f"Warning: xcactivitylog supplement failed: {e}", file=sys.stderr)
         return errors_json
 
 
@@ -264,6 +267,15 @@ def build_project(project_path: str,
     if include_warnings is not None and not isinstance(include_warnings, bool):
         raise InvalidParameterError("include_warnings must be a boolean value")
 
+    # Validate regex_filter up front so a bad pattern produces a clear error
+    # immediately, before any AppleScript runs. The supplement helper assumes
+    # the pattern compiles.
+    if regex_filter and regex_filter.strip():
+        try:
+            re.compile(regex_filter)
+        except re.error as e:
+            raise InvalidParameterError(f"Invalid regex_filter: {e}")
+
     # Validate and normalize path
     scheme_desc = scheme if scheme else "active scheme"
     normalized_path = validate_and_normalize_project_path(project_path, f"Building {scheme_desc} in")
@@ -297,7 +309,10 @@ def build_project(project_path: str,
         manifest_path = os.path.join(derived_data_path, "Logs", "Build", "LogStoreManifest.plist")
         pre_build_uuids = snapshot_build_uuids(manifest_path)
 
-    success, output = run_applescript(script)
+    # The script polls inside AppleScript for up to BUILD_TIMEOUT_SECONDS; the
+    # subprocess timeout must exceed that, with a small buffer for workspace
+    # load and IPC overhead.
+    success, output = run_applescript(script, timeout=BUILD_TIMEOUT_SECONDS + 60)
 
     if success:
         # Parse the BUILD_STATUS: prefix from the AppleScript output

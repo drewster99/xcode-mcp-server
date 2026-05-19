@@ -8,6 +8,7 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
+    BUILD_TIMEOUT_SECONDS,
     build_open_and_wait_applescript,
     escape_applescript_string,
     run_applescript,
@@ -38,7 +39,9 @@ def clean_project(project_path: str) -> str:
         'end tell\n'
     )
 
-    success, output = run_applescript(script)
+    # Clean is synchronous in AppleScript and can take minutes on large projects;
+    # use the same budget as build/test rather than the short default.
+    success, output = run_applescript(script, timeout=BUILD_TIMEOUT_SECONDS + 60)
 
     project_name = os.path.basename(normalized_path)
 

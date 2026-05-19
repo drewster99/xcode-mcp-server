@@ -3,6 +3,7 @@
 
 import os
 import json
+import sys
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
@@ -56,8 +57,8 @@ def get_latest_test_results(project_path: str) -> str:
                     show_result_notification("All tests PASSED")
                 else:
                     show_error_notification(f"{failed} test{'s' if failed != 1 else ''} FAILED")
-            except Exception:
-                pass
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"warn: could not parse test summary for notification: {e}", file=sys.stderr)
 
             return test_results
 

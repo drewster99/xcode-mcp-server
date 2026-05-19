@@ -25,6 +25,16 @@ from xcode_mcp_server.utils.xcresult import (
     extract_console_logs_from_xcresult
 )
 
+# Wall-clock cap on the interactive poll loop. The user is expected to either
+# click the alert button or have the app terminate; this is the upper bound on
+# how long we keep polling before we give up. Errors with a clear message if hit.
+MAX_INTERACTIVE_RUN_SECONDS = 3600
+
+# Seconds to wait after `run workspaceDoc` returns before showing the alert.
+# Long enough for a cold simulator to render the app; short enough that we
+# detect an immediate launch crash and skip showing a meaningless alert.
+LAUNCH_SETTLE_TIMEOUT = 10
+
 
 @mcp.tool()
 @apply_config
@@ -79,65 +89,104 @@ def run_project_with_user_interaction(project_path: str,
     start_datetime = datetime.datetime.fromtimestamp(start_time)
     print(f"Run start time: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}", file=sys.stderr)
 
+    # The launch AppleScript only kicks off `run workspaceDoc` and returns
+    # immediately; the default timeout covers workspace load + dispatch.
     success, output = run_applescript(script)
 
     if not success:
         show_error_notification("Failed to launch app", project_name)
         raise XCodeMCPError(f"Launch failed: {output}")
 
-    print(f"App launched, waiting for it to start running...", file=sys.stderr)
+    print(f"App launched, waiting for it to settle (up to {LAUNCH_SETTLE_TIMEOUT}s)...", file=sys.stderr)
 
-    # Poll for a few seconds to verify the app is actually running
-    time.sleep(3)
+    check_script = f'''
+    set projectPath to "{escaped_path}"
 
-    # Show the persistent alert with clear button text
-    alert_process = show_persistent_alert(
-        f"{project_name} is running",
-        f"{project_name} is now running in Xcode/Simulator.\n\nInteract with the app as needed, then click the button below when you're done testing.",
-        button_text="I'm finished - Terminate App"
-    )
+    tell application "Xcode"
+        set workspaceDoc to first workspace document whose path is projectPath
+        set lastAction to last scheme action result of workspaceDoc
+        return completed of lastAction as string
+    end tell
+    '''
 
-    print(f"Alert shown. Polling for app termination or user finish click...", file=sys.stderr)
-
-    # Now poll to check if:
-    # 1. App terminated naturally (check via AppleScript)
-    # 2. User clicked Finish (alert process exited)
-
+    # Brief settle window: poll the action's `completed` flag. If the app
+    # crashes or exits during this window, we skip the alert entirely. If it's
+    # still running when the window expires, we proceed to show the alert.
+    settle_elapsed = 0.0
     app_terminated = False
-    user_clicked_finish = False
-
-    while True:
-        # Check if user clicked the terminate button
-        if alert_process and alert_process.poll() is not None:
-            print(f"User clicked 'I'm finished - Terminate App'", file=sys.stderr)
-            user_clicked_finish = True
-            break
-
-        # Check if app terminated naturally
-        check_script = f'''
-        set projectPath to "{escaped_path}"
-
-        tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is projectPath
-            set lastAction to last scheme action result of workspaceDoc
-            return completed of lastAction as string
-        end tell
-        '''
-
+    while settle_elapsed < LAUNCH_SETTLE_TIMEOUT:
         success, completed_str = run_applescript(check_script)
         if success and completed_str.strip().lower() == "true":
-            print(f"App terminated naturally", file=sys.stderr)
+            print(f"App terminated during launch settle window (likely crashed at launch)", file=sys.stderr)
             app_terminated = True
-            # Kill the alert since app is done
-            if alert_process:
+            break
+        time.sleep(0.5)
+        settle_elapsed += 0.5
+
+    user_clicked_finish = False
+    alert_process = None
+
+    if not app_terminated:
+        # Show the persistent alert with clear button text
+        alert_process = show_persistent_alert(
+            f"{project_name} is running",
+            f"{project_name} is now running in Xcode/Simulator.\n\nInteract with the app as needed, then click the button below when you're done testing.",
+            button_text="I'm finished - Terminate App"
+        )
+
+        # Interactive mode without the alert has no way to know when the user
+        # is done — fail fast rather than polling indefinitely.
+        if alert_process is None:
+            show_error_notification(
+                "Interactive run not available",
+                "Notifications are disabled; use run_project_until_terminated instead.",
+            )
+            raise XCodeMCPError(
+                "run_project_with_user_interaction requires notifications to be "
+                "enabled (the persistent alert is the user's signal that they're "
+                "done testing). Use run_project_until_terminated for unattended "
+                "runs."
+            )
+
+        print(f"Alert shown. Polling for app termination or user finish click...", file=sys.stderr)
+
+        # Poll for either condition with a wall-clock cap so a wedged AppleScript
+        # or a forgotten alert can't hang the MCP server forever.
+        poll_elapsed = 0.0
+        while poll_elapsed < MAX_INTERACTIVE_RUN_SECONDS:
+            if alert_process.poll() is not None:
+                print(f"User clicked 'I'm finished - Terminate App'", file=sys.stderr)
+                user_clicked_finish = True
+                break
+
+            success, completed_str = run_applescript(check_script)
+            if success and completed_str.strip().lower() == "true":
+                print(f"App terminated naturally", file=sys.stderr)
+                app_terminated = True
                 try:
                     alert_process.terminate()
                 except OSError:
                     pass
-            break
+                break
 
-        # Poll every 2 seconds
-        time.sleep(2)
+            time.sleep(2)
+            poll_elapsed += 2
+        else:
+            # Loop exited via the while condition (timeout). Stop the alert and
+            # surface this clearly so the caller knows logs may be from a
+            # still-running app.
+            try:
+                alert_process.terminate()
+            except OSError:
+                pass
+            show_error_notification(
+                f"Interactive run exceeded {MAX_INTERACTIVE_RUN_SECONDS // 60} min",
+                project_name,
+            )
+            raise XCodeMCPError(
+                f"Interactive run exceeded the {MAX_INTERACTIVE_RUN_SECONDS}-second "
+                f"cap. The app may still be running; stop it manually in Xcode."
+            )
 
     # If user clicked finish, we need to stop the app
     if user_clicked_finish and not app_terminated:

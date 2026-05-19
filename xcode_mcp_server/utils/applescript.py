@@ -4,13 +4,18 @@
 import subprocess
 import sys
 import datetime
+from collections import deque
 from typing import Tuple, List, Dict, Optional
+
+from xcode_mcp_server.exceptions import XCodeMCPError
 
 # Global notification setting - initialized by CLI
 NOTIFICATIONS_ENABLED = True
 
-# Global notification history - stores all notifications posted
-NOTIFICATION_HISTORY: List[Dict[str, str]] = []
+# Bounded notification history. Long-lived MCP servers post many notifications;
+# capping the history prevents unbounded memory growth.
+NOTIFICATION_HISTORY_MAX = 100
+NOTIFICATION_HISTORY: "deque[Dict[str, str]]" = deque(maxlen=NOTIFICATION_HISTORY_MAX)
 
 # Number of 0.5-second poll iterations before giving up on waiting for an Xcode
 # workspace document to load.
@@ -20,6 +25,17 @@ WORKSPACE_LOAD_REPEATS = 60
 # AppleScript polling loops.
 BUILD_TIMEOUT_SECONDS = 600
 
+# Default subprocess timeout for `osascript` invocations that are expected to
+# return quickly (lookups, cleanup commands, individual status checks). Callers
+# that wrap a long-running inner AppleScript loop (build/run/test) must pass an
+# explicit longer timeout — see callers in tools/build_project.py and
+# tools/run_project_*.py.
+DEFAULT_APPLESCRIPT_TIMEOUT = 60
+
+# Subprocess timeout for fire-and-forget notification dispatch. Short on
+# purpose: if Notification Center is wedged we don't want to block any tool.
+NOTIFICATION_TIMEOUT = 5
+
 
 def set_notifications_enabled(enabled: bool):
     """Set the global notification setting"""
@@ -28,14 +44,13 @@ def set_notifications_enabled(enabled: bool):
 
 
 def get_notification_history() -> List[Dict[str, str]]:
-    """Get the notification history"""
-    return NOTIFICATION_HISTORY.copy()
+    """Get a snapshot of the notification history"""
+    return list(NOTIFICATION_HISTORY)
 
 
 def clear_notification_history():
     """Clear the notification history"""
-    global NOTIFICATION_HISTORY
-    NOTIFICATION_HISTORY = []
+    NOTIFICATION_HISTORY.clear()
 
 
 def escape_applescript_string(s: str) -> str:
@@ -119,14 +134,44 @@ def build_wait_for_completion_applescript(
     )
 
 
-def run_applescript(script: str) -> Tuple[bool, str]:
-    """Run an AppleScript and return success status and output"""
+def run_applescript(script: str, timeout: int = DEFAULT_APPLESCRIPT_TIMEOUT) -> Tuple[bool, str]:
+    """Run an AppleScript and return success status and output.
+
+    Args:
+        script: AppleScript source to evaluate.
+        timeout: Wall-clock seconds before the osascript subprocess is killed.
+            The default suits quick dispatch (lookups, status checks). Callers
+            that wrap a long-running inner AppleScript loop (build/run/test
+            poll loops up to BUILD_TIMEOUT_SECONDS) MUST pass an explicit
+            longer value (typically `BUILD_TIMEOUT_SECONDS` plus a buffer for
+            workspace load + IPC).
+
+    Returns:
+        (success, output) tuple. On AppleScript failure, output is the
+        captured stderr. On timeout the subprocess is killed and an
+        XCodeMCPError is raised so the caller can't accidentally treat a hang
+        as a normal failure.
+
+    Raises:
+        XCodeMCPError: If the osascript subprocess exceeds `timeout` seconds.
+    """
     try:
-        result = subprocess.run(['osascript', '-e', script],
-                               capture_output=True, text=True, check=True)
+        result = subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
         return True, result.stdout.strip()
     except subprocess.CalledProcessError as e:
         return False, e.stderr.strip()
+    except subprocess.TimeoutExpired:
+        raise XCodeMCPError(
+            f"AppleScript timed out after {timeout}s — Xcode may be unresponsive "
+            f"(modal sheet, indexing, or frozen). Try again after dismissing any "
+            f"dialogs in Xcode."
+        )
 
 
 def show_notification(title: str, subtitle: str = None, message: str = None, sound: bool = False):
@@ -139,7 +184,6 @@ def show_notification(title: str, subtitle: str = None, message: str = None, sou
         sound: Whether to play a sound (for errors/important events)
     """
     # Record in history (always, even if notifications are disabled)
-    global NOTIFICATION_HISTORY
     NOTIFICATION_HISTORY.append({
         'timestamp': datetime.datetime.now().isoformat(),
         'title': title,
@@ -172,22 +216,34 @@ def show_notification(title: str, subtitle: str = None, message: str = None, sou
         pass
 
     # Show the notification
+    # Build AppleScript command - message is required by AppleScript
+    msg = message or subtitle or title
+    escaped_msg = escape_applescript_string(msg)
+    escaped_title = escape_applescript_string(title)
+
+    script = f'display notification "{escaped_msg}" with title "{escaped_title}"'
+    if subtitle:
+        escaped_subtitle = escape_applescript_string(subtitle)
+        script += f' subtitle "{escaped_subtitle}"'
+    if sound:
+        script += ' sound name "Frog"'
+
     try:
-        # Build AppleScript command - message is required by AppleScript
-        msg = message or subtitle or title
-        escaped_msg = escape_applescript_string(msg)
-        escaped_title = escape_applescript_string(title)
-
-        script = f'display notification "{escaped_msg}" with title "{escaped_title}"'
-        if subtitle:
-            escaped_subtitle = escape_applescript_string(subtitle)
-            script += f' subtitle "{escaped_subtitle}"'
-        if sound:
-            script += ' sound name "Frog"'
-
-        subprocess.run(['osascript', '-e', script], capture_output=True)
-    except Exception:
-        pass
+        subprocess.run(
+            ['osascript', '-e', script],
+            capture_output=True,
+            timeout=NOTIFICATION_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"Warning: notification dispatch timed out after {NOTIFICATION_TIMEOUT}s "
+            f"(Notification Center may be wedged): title={title!r}",
+            file=sys.stderr,
+        )
+    except FileNotFoundError:
+        print("Warning: osascript not found on PATH; cannot show notification", file=sys.stderr)
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: notification dispatch failed: {e}", file=sys.stderr)
 
 
 def show_error_notification(message: str, details: str = None):
@@ -227,18 +283,23 @@ def show_persistent_alert(title: str, message: str, button_text: str = "OK") -> 
     """
     if NOTIFICATIONS_ENABLED:
         try:
-            # Escape strings for AppleScript
             escaped_title = escape_applescript_string(title)
             escaped_button = escape_applescript_string(button_text)
 
-            # Handle newlines in message - replace \n with AppleScript's 'return'
-            # First escape the message normally, then handle newlines
-            escaped_message = escape_applescript_string(message)
-            # Replace escaped newlines with AppleScript return concatenation
-            escaped_message = escaped_message.replace('\\n', '" & return & "')
+            # Newlines must become AppleScript's `return` concatenation; a raw
+            # newline inside a quoted AppleScript string is a syntax error.
+            # Split first, escape each chunk, then join — escaping the whole
+            # message and then trying to replace newlines is unsafe because the
+            # escape step has already changed which characters are which.
+            message_expr = " & return & ".join(
+                f'"{escape_applescript_string(chunk)}"' for chunk in message.split("\n")
+            )
 
-            # Build AppleScript for alert dialog
-            script = f'display dialog "{escaped_message}" with title "{escaped_title}" buttons {{"{escaped_button}"}} default button "{escaped_button}" with icon caution'
+            script = (
+                f'display dialog {message_expr} with title "{escaped_title}" '
+                f'buttons {{"{escaped_button}"}} default button "{escaped_button}" '
+                f'with icon caution'
+            )
 
             # Run in background (non-blocking) and return the process
             return subprocess.Popen(
@@ -246,7 +307,7 @@ def show_persistent_alert(title: str, message: str, button_text: str = "OK") -> 
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-        except Exception as e:
-            print(f"Warning: Failed to show alert: {e}", file=sys.stderr)
+        except OSError as e:
+            print(f"Warning: Failed to spawn alert process: {e}", file=sys.stderr)
             return None
     return None

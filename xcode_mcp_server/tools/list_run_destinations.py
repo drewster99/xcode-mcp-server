@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from typing import Optional
 
 from xcode_mcp_server.server import mcp
@@ -24,19 +25,24 @@ def _get_first_scheme_via_xcodebuild(project_path: str, project_flag: str) -> Op
             ['xcodebuild', '-list', project_flag, project_path],
             capture_output=True, text=True, timeout=15,
         )
-        # Parse "Schemes:" section from output
-        in_schemes = False
-        for line in result.stdout.split('\n'):
-            stripped = line.strip()
-            if stripped == 'Schemes:':
-                in_schemes = True
-                continue
-            if in_schemes:
-                if stripped == '' or stripped.endswith(':'):
-                    break
-                return stripped
-    except Exception:
-        pass
+    except subprocess.TimeoutExpired:
+        print(f"warn: xcodebuild -list timed out for {project_path}", file=sys.stderr)
+        return None
+    except FileNotFoundError:
+        print("warn: `xcodebuild` binary not found on PATH", file=sys.stderr)
+        return None
+
+    # Parse "Schemes:" section from output
+    in_schemes = False
+    for line in result.stdout.split('\n'):
+        stripped = line.strip()
+        if stripped == 'Schemes:':
+            in_schemes = True
+            continue
+        if in_schemes:
+            if stripped == '' or stripped.endswith(':'):
+                break
+            return stripped
     return None
 
 

@@ -109,8 +109,13 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
             elif line.startswith('WINDOW:') and current_app:
                 parts = line[7:].split('\t', 2)
                 if len(parts) >= 3:
-                    window_id = parts[0]
-                    pid = parts[1]
+                    try:
+                        window_id = int(parts[0])
+                        pid = int(parts[1])
+                    except ValueError:
+                        # Swift emitter always produces ints; skip any
+                        # malformed line rather than poison the list.
+                        continue
                     title = parts[2]
                     apps_with_windows[current_app].append({
                         'id': window_id,

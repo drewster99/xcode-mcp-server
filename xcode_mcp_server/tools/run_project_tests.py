@@ -13,6 +13,8 @@ from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError
 from xcode_mcp_server.utils.applescript import (
     BUILD_TIMEOUT_SECONDS,
+    build_open_and_wait_applescript,
+    build_wait_for_completion_applescript,
     escape_applescript_string,
     run_applescript,
     show_notification,
@@ -23,11 +25,15 @@ from xcode_mcp_server.utils.applescript import (
 from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_results_from_xcresult
 
 
-# TODO: Implement selective test execution with xcodebuild
+# TODO (follow-up): Implement selective test execution with xcodebuild.
+#
 # AppleScript's 'test' command doesn't support -only-testing: flags, so we need
-# to use xcodebuild directly for running specific tests. However, xcodebuild also
-# requires specifying a run destination (-destination flag), which we need to
-# extract from Xcode's active run destination before implementing this feature.
+# to use xcodebuild directly for running specific tests. xcodebuild also
+# requires a -destination flag — the original blocker — which is now solvable
+# via get_active_run_destination / set_run_destination / list_run_destinations.
+# The commented implementation below is preserved as the starting point for
+# that follow-up work; once it's properly implemented and tested, this block
+# should be removed.
 #
 # def _get_active_scheme(project_path: str) -> str:
 #     """Get the active scheme for a project using AppleScript"""
@@ -192,125 +198,91 @@ def run_project_tests(project_path: str,
     # if tests_to_run:
     #     return _run_tests_with_xcodebuild(project_path, tests_to_run, scheme, max_wait_seconds)
 
-    # For running all tests, use AppleScript
+    # Build the AppleScript from shared helpers + the test-specific failure
+    # extraction tail. The open/wait/scheme-set boilerplate lives in
+    # build_open_and_wait_applescript so both build and test paths share it.
     escaped_path = escape_applescript_string(project_path)
-    test_command = 'test workspaceDoc'
+    escaped_scheme = escape_applescript_string(scheme) if scheme else None
 
-    wait_section = f'''set waitTime to 0
-    repeat while waitTime < {BUILD_TIMEOUT_SECONDS}
-        if completed of testResult is true then
-            exit repeat
-        end if
-        delay 1
-        set waitTime to waitTime + 1
-    end repeat
+    # Test-specific: after the wait loop completes, walk `test failures of
+    # testResult` and emit a structured text blob the Python side parses.
+    failure_extraction_tail = (
+        '    -- Get results\n'
+        '    set testStatus to status of testResult as string\n'
+        '    set testCompleted to completed of testResult\n'
+        '\n'
+        '    -- Get failures if any with full details\n'
+        '    set failureMessages to ""\n'
+        '    set failureCount to 0\n'
+        '    try\n'
+        '        set failures to test failures of testResult\n'
+        '        set failureCount to count of failures\n'
+        '        if failureCount > 0 then\n'
+        '            repeat with failure in failures\n'
+        '                set failureMsg to ""\n'
+        '                set failurePath to ""\n'
+        '                set failureLine to ""\n'
+        '\n'
+        '                try\n'
+        '                    set failureMsg to message of failure\n'
+        '                on error\n'
+        '                    set failureMsg to "Unknown test failure"\n'
+        '                end try\n'
+        '\n'
+        '                try\n'
+        '                    set failurePath to file path of failure\n'
+        '                end try\n'
+        '\n'
+        '                try\n'
+        '                    set failureLine to starting line number of failure as string\n'
+        '                end try\n'
+        '\n'
+        '                set failureMessages to failureMessages & "FAILURE: " & failureMsg & "\\n"\n'
+        '                if failurePath is not "" and failurePath is not missing value then\n'
+        '                    set failureMessages to failureMessages & "FILE: " & failurePath & "\\n"\n'
+        '                end if\n'
+        '                if failureLine is not "" and failureLine is not "missing value" then\n'
+        '                    set failureMessages to failureMessages & "LINE: " & failureLine & "\\n"\n'
+        '                end if\n'
+        '                set failureMessages to failureMessages & "---\\n"\n'
+        '            end repeat\n'
+        '        else\n'
+        '            -- No test failures in collection, but status might still be failed.\n'
+        '            -- We will parse the build log later to extract actual failure details.\n'
+        '            if testStatus is "failed" or testStatus contains "fail" then\n'
+        '                set failureMessages to "PARSE_FROM_LOG" & "\\n"\n'
+        '            end if\n'
+        '        end if\n'
+        '    on error errMsg\n'
+        '        if testStatus is "failed" or testStatus contains "fail" then\n'
+        '            set failureMessages to "PARSE_FROM_LOG" & "\\n"\n'
+        '        end if\n'
+        '    end try\n'
+        '\n'
+        '    -- Get build log for statistics\n'
+        '    set buildLog to ""\n'
+        '    try\n'
+        '        set buildLog to build log of testResult\n'
+        '    end try\n'
+        '\n'
+        '    return "Status: " & testStatus & "\\n" & ¬\n'
+        '           "Completed: " & testCompleted & "\\n" & ¬\n'
+        '           "FailureCount: " & (failureCount as string) & "\\n" & ¬\n'
+        '           "Failures:\\n" & failureMessages & "\\n" & ¬\n'
+        '           "---LOG---\\n" & buildLog\n'
+    )
 
-    -- Get results
-    set testStatus to status of testResult as string
-    set testCompleted to completed of testResult
+    script = (
+        build_open_and_wait_applescript(escaped_path, escaped_scheme)
+        + '    set testResult to test workspaceDoc\n'
+        + build_wait_for_completion_applescript("testResult", BUILD_TIMEOUT_SECONDS)
+        + failure_extraction_tail
+        + 'end tell\n'
+    )
 
-    -- Get failures if any with full details
-    set failureMessages to ""
-    set failureCount to 0
-    try
-        set failures to test failures of testResult
-        set failureCount to count of failures
-        if failureCount > 0 then
-            repeat with failure in failures
-                set failureMsg to ""
-                set failurePath to ""
-                set failureLine to ""
-
-                try
-                    set failureMsg to message of failure
-                on error
-                    set failureMsg to "Unknown test failure"
-                end try
-
-                try
-                    set failurePath to file path of failure
-                end try
-
-                try
-                    set failureLine to starting line number of failure as string
-                end try
-
-                set failureMessages to failureMessages & "FAILURE: " & failureMsg & "\\n"
-                if failurePath is not "" and failurePath is not missing value then
-                    set failureMessages to failureMessages & "FILE: " & failurePath & "\\n"
-                end if
-                if failureLine is not "" and failureLine is not "missing value" then
-                    set failureMessages to failureMessages & "LINE: " & failureLine & "\\n"
-                end if
-                set failureMessages to failureMessages & "---\\n"
-            end repeat
-        else
-            -- No test failures in collection, but status might still be failed
-            -- This happens when tests fail but the failures collection is empty
-            -- We'll parse the build log later to extract actual failure details
-            if testStatus is "failed" or testStatus contains "fail" then
-                set failureMessages to "PARSE_FROM_LOG" & "\\n"
-            end if
-        end if
-    on error errMsg
-        -- Could not access test failures
-        if testStatus is "failed" or testStatus contains "fail" then
-            set failureMessages to "PARSE_FROM_LOG" & "\\n"
-        end if
-    end try
-
-    -- Get build log for statistics
-    set buildLog to ""
-    try
-        set buildLog to build log of testResult
-    end try
-
-    return "Status: " & testStatus & "\\n" & ¬
-           "Completed: " & testCompleted & "\\n" & ¬
-           "FailureCount: " & (failureCount as string) & "\\n" & ¬
-           "Failures:\\n" & failureMessages & "\\n" & ¬
-           "---LOG---\\n" & buildLog'''
-
-    script = f'''
-set projectPath to "{escaped_path}"
-
-tell application "Xcode"
-    -- Wait for any modal dialogs to be dismissed
-    delay 0.5
-
-    -- Open and get the workspace document
-    open projectPath
-    delay 2
-
-    -- Get the workspace document
-    set workspaceDoc to first workspace document whose path is projectPath
-
-    -- Wait for workspace to load
-    set loadWaitTime to 0
-    repeat while loadWaitTime < 60
-        if loaded of workspaceDoc is true then
-            exit repeat
-        end if
-        delay 0.5
-        set loadWaitTime to loadWaitTime + 0.5
-    end repeat
-
-    if loaded of workspaceDoc is false then
-        error "Workspace failed to load within timeout"
-    end if
-
-    -- Set scheme if specified
-    {f'set active scheme of workspaceDoc to scheme "{escape_applescript_string(scheme)}" of workspaceDoc' if scheme else ''}
-
-    -- Start the test
-    set testResult to {test_command}
-
-    -- Wait for completion (up to 10 minutes)
-    {wait_section}
-end tell
-    '''
-
-    success, output = run_applescript(script)
+    # The script polls inside AppleScript for up to BUILD_TIMEOUT_SECONDS; the
+    # subprocess timeout must exceed that, plus buffer for workspace load.
+    success, output = run_applescript(script, timeout=BUILD_TIMEOUT_SECONDS + 60)
 
     if not success:
         show_error_notification("Failed to run tests", os.path.basename(project_path))
@@ -363,8 +335,8 @@ end tell
                     show_result_notification("All tests PASSED")
                 else:
                     show_error_notification(f"{failed} test{'s' if failed != 1 else ''} FAILED")
-            except Exception:
-                pass
+            except (json.JSONDecodeError, AttributeError) as e:
+                print(f"warn: could not parse test summary for notification: {e}", file=sys.stderr)
 
             # Return the parsed JSON
             return test_results
