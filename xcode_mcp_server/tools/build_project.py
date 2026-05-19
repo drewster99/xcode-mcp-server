@@ -84,7 +84,9 @@ def _supplement_with_xcactivitylog_warnings(
         # Wait for our build's manifest entry to appear so aggregation sees
         # the current build's compiled-files set and warnings, not stale ones
         # from the prior build. Falls through to the existing behavior on
-        # timeout — degraded but not broken.
+        # timeout — degraded but not broken. The aggregation_status flag
+        # captures the degradation so we can surface it in the JSON response.
+        aggregation_status: Optional[dict] = None
         if pre_build_uuids is not None and unix_start_time is not None:
             our_uuid = wait_for_new_build_uuid(
                 manifest_path,
@@ -98,12 +100,37 @@ def _supplement_with_xcactivitylog_warnings(
                     f"of {project_path}; aggregated warnings may be stale.",
                     file=sys.stderr,
                 )
+                aggregation_status = {
+                    'status': 'possibly_stale',
+                    'reason': (
+                        f"this build's manifest entry did not appear within "
+                        f"{MANIFEST_ENTRY_WAIT_SECONDS}s; warnings may include "
+                        f"stale entries from a prior build"
+                    ),
+                }
 
         xcactivity_result = aggregate_warnings_since_clean(manifest_path, logs_dir)
+        if xcactivity_result.get('summary', {}).get('manifest_unreadable'):
+            aggregation_status = {
+                'status': 'unavailable',
+                'reason': xcactivity_result['summary'].get('error', 'manifest unreadable'),
+            }
+
+        def _with_status(json_text: str) -> str:
+            """Attach aggregation_status to the JSON payload, if set."""
+            if aggregation_status is None:
+                return json_text
+            try:
+                payload = json.loads(json_text)
+            except json.JSONDecodeError:
+                return json_text
+            payload['warning_aggregation'] = aggregation_status
+            return json.dumps(payload)
+
         xcactivity_items = xcactivity_result.get('aggregated_warnings', [])
 
         if not xcactivity_items:
-            return errors_json
+            return _with_status(errors_json)
 
         # Apply regex_filter to xcactivitylog items if provided
         if regex_filter and regex_filter.strip():
@@ -115,7 +142,7 @@ def _supplement_with_xcactivitylog_warnings(
                 )
             ]
             if not xcactivity_items:
-                return errors_json
+                return _with_status(errors_json)
 
         result = json.loads(errors_json)
         existing_text = result.get('errors_and_warnings', '')
@@ -199,7 +226,7 @@ def _supplement_with_xcactivitylog_warnings(
                     f" See full log for failure details."
                 )
             else:
-                return errors_json
+                return _with_status(errors_json)
         else:
             if total_warnings > 0 and total_errors > 0:
                 count_msg = (
@@ -209,7 +236,7 @@ def _supplement_with_xcactivitylog_warnings(
             elif total_warnings > 0:
                 count_msg = f"Build succeeded with {total_warnings} warning{'s' if total_warnings != 1 else ''}."
             else:
-                return errors_json
+                return _with_status(errors_json)
 
         if total_errors + total_warnings > max_lines:
             count_msg += f" Showing first {len(combined)} of {total_errors + total_warnings}."
@@ -222,6 +249,8 @@ def _supplement_with_xcactivitylog_warnings(
         result['summary']['showing_errors'] = displayed_errors
         result['summary']['showing_warnings'] = displayed_warnings
         result['errors_and_warnings'] = output_text
+        if aggregation_status is not None:
+            result['warning_aggregation'] = aggregation_status
 
         return json.dumps(result)
 
@@ -256,7 +285,7 @@ def build_project(project_path: str,
     Returns:
         Always returns JSON with format:
         {
-            "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
+            "full_log_path": "~/Library/Caches/xcode-mcp-server/logs/build-{hash}.txt",
             "summary": {"total_errors": N, "total_warnings": M, "showing_errors": X, "showing_warnings": Y},
             "errors_and_warnings": "Build failed with N errors...\nerror: ...\n..."
         }

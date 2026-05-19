@@ -4,6 +4,7 @@
 import subprocess
 import sys
 import datetime
+import threading
 from collections import deque
 from typing import Tuple, List, Dict, Optional
 
@@ -16,6 +17,11 @@ NOTIFICATIONS_ENABLED = True
 # capping the history prevents unbounded memory growth.
 NOTIFICATION_HISTORY_MAX = 100
 NOTIFICATION_HISTORY: "deque[Dict[str, str]]" = deque(maxlen=NOTIFICATION_HISTORY_MAX)
+# Guards both `.append()` in show_notification and `list(...)` in
+# get_notification_history. FastMCP dispatches sync tools onto a threadpool;
+# without this, an interleaved iterate-during-append can raise
+# `RuntimeError: deque mutated during iteration` from the C iterator.
+_NOTIFICATION_HISTORY_LOCK = threading.Lock()
 
 # Number of 0.5-second poll iterations before giving up on waiting for an Xcode
 # workspace document to load.
@@ -45,12 +51,14 @@ def set_notifications_enabled(enabled: bool):
 
 def get_notification_history() -> List[Dict[str, str]]:
     """Get a snapshot of the notification history"""
-    return list(NOTIFICATION_HISTORY)
+    with _NOTIFICATION_HISTORY_LOCK:
+        return list(NOTIFICATION_HISTORY)
 
 
 def clear_notification_history():
     """Clear the notification history"""
-    NOTIFICATION_HISTORY.clear()
+    with _NOTIFICATION_HISTORY_LOCK:
+        NOTIFICATION_HISTORY.clear()
 
 
 def escape_applescript_string(s: str) -> str:
@@ -184,13 +192,14 @@ def show_notification(title: str, subtitle: str = None, message: str = None, sou
         sound: Whether to play a sound (for errors/important events)
     """
     # Record in history (always, even if notifications are disabled)
-    NOTIFICATION_HISTORY.append({
-        'timestamp': datetime.datetime.now().isoformat(),
-        'title': title,
-        'subtitle': subtitle or '',
-        'message': message or '',
-        'sound': str(sound)
-    })
+    with _NOTIFICATION_HISTORY_LOCK:
+        NOTIFICATION_HISTORY.append({
+            'timestamp': datetime.datetime.now().isoformat(),
+            'title': title,
+            'subtitle': subtitle or '',
+            'message': message or '',
+            'sound': str(sound)
+        })
 
     # Check global setting first
     if not NOTIFICATIONS_ENABLED:

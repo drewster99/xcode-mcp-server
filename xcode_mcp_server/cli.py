@@ -10,7 +10,7 @@ from xcode_mcp_server import __version__
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.security import get_allowed_folders, set_allowed_folders
 from xcode_mcp_server.utils.applescript import set_notifications_enabled
-from xcode_mcp_server.utils.xcresult import set_build_warnings_enabled
+from xcode_mcp_server.utils.xcresult import set_build_warnings_enabled, freeze_build_warnings_settings
 
 
 def initialize_server():
@@ -126,6 +126,10 @@ All specified folders must:
         message="Working dir: " + display_cwd,
         subtitle="✅ Server started"
     )
+
+    # Lock startup-only globals so any later mutation surfaces as a
+    # RuntimeError instead of silently racing concurrent tool readers.
+    freeze_build_warnings_settings()
 
     # Run the server
     mcp.run()

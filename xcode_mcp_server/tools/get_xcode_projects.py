@@ -215,6 +215,14 @@ def get_xcode_projects(
         # Search specific path
         project_path = search_path.strip()
 
+        # Relative paths would resolve against the server's cwd, which is
+        # almost never what the LLM intended — reject up front rather than
+        # silently producing surprising results.
+        if not os.path.isabs(project_path):
+            raise InvalidParameterError(
+                f"search_path must be an absolute path (got: {project_path!r})"
+            )
+
         # Security check
         if not is_path_allowed(project_path):
             show_access_denied_notification(f"Access denied: {project_path}")
@@ -227,21 +235,38 @@ def get_xcode_projects(
 
         paths_to_search = [project_path]
 
-    # Search for projects in all paths
+    # Search for projects in all paths. Collect per-path failures so the
+    # caller can tell "no projects" apart from "the search itself was
+    # incomplete".
+    mdfind_timeout_seconds = 30
     all_results = []
+    search_warnings = []
     for path in paths_to_search:
         try:
-            # Use mdfind to search for Xcode projects
-            mdfindResult = subprocess.run(['mdfind', '-onlyin', path,
-                                         'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'],
-                                         capture_output=True, text=True, check=True)
-            result = mdfindResult.stdout.strip()
-            if result:
-                all_results.extend(result.split('\n'))
-        except Exception as e:
+            mdfindResult = subprocess.run(
+                ['mdfind', '-onlyin', path,
+                 'kMDItemFSName == "*.xcodeproj" || kMDItemFSName == "*.xcworkspace"'],
+                capture_output=True, text=True, check=True,
+                timeout=mdfind_timeout_seconds,
+            )
+            stdout = mdfindResult.stdout.strip()
+            if stdout:
+                all_results.extend(stdout.split('\n'))
+        except subprocess.TimeoutExpired:
+            reason = f"mdfind timed out after {mdfind_timeout_seconds}s"
+            search_warnings.append(f"{path}: {reason}")
+            show_warning_notification(f"mdfind timed out for {os.path.basename(path)}")
+            print(f"Warning: {reason} in {path}", file=sys.stderr)
+        except subprocess.CalledProcessError as e:
+            reason = f"mdfind exited {e.returncode}: {(e.stderr or '').strip() or '(no stderr)'}"
+            search_warnings.append(f"{path}: {reason}")
+            show_warning_notification(f"mdfind failed for {os.path.basename(path)}", reason)
+            print(f"Warning: {reason} in {path}", file=sys.stderr)
+        except OSError as e:
+            reason = f"mdfind not invokable: {e}"
+            search_warnings.append(f"{path}: {reason}")
             show_warning_notification(f"mdfind failed for {os.path.basename(path)}", str(e))
-            print(f"Warning: Error searching in {path}: {str(e)}", file=sys.stderr)
-            continue
+            print(f"Warning: {reason} in {path}", file=sys.stderr)
 
     # Supplement mdfind with recently created projects that Spotlight
     # may not have indexed yet
@@ -305,4 +330,12 @@ def get_xcode_projects(
     result = '\n'.join(unique_results) if unique_results else ""
     if result:
         result += "\n\nTo build a project, use `get_project_schemes` to see available build schemes, then call `build_project`."
+
+    if search_warnings:
+        warn_block = "\n".join(f"- {w}" for w in search_warnings)
+        prefix = "\n\n" if result else ""
+        result += (
+            f"{prefix}[search warnings — results may be incomplete]\n{warn_block}"
+        )
+
     return result

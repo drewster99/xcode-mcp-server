@@ -8,11 +8,12 @@ import time
 import uuid
 
 from xcode_mcp_server.exceptions import XCodeMCPError
+from xcode_mcp_server.utils.paths import SCREENSHOT_DIR
 
-# Screenshots are written to a per-user cache directory so they are not
-# world-readable like /tmp would be. Files older than the retention window are
-# pruned on each call to keep the directory bounded without an external cron.
-SCREENSHOT_DIR = os.path.expanduser("~/Library/Caches/xcode-mcp-server/screenshots")
+# Screenshots are written to a per-user cache directory (see utils.paths) so
+# they are not world-readable like /tmp would be. Files older than the
+# retention window are pruned on each call to keep the directory bounded
+# without an external cron.
 SCREENSHOT_RETENTION_SECONDS = 24 * 60 * 60
 
 
@@ -133,13 +134,13 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 }
 '''
 
-    # Write Swift code to temporary file and execute
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.swift', delete=False) as f:
-        f.write(swift_code)
-        temp_file = f.name
+    # TemporaryDirectory guarantees cleanup on normal exit, including
+    # exceptions raised inside the block.
+    with tempfile.TemporaryDirectory(prefix='xcode-mcp-swift-') as tmpdir:
+        temp_file = os.path.join(tmpdir, 'get_windows.swift')
+        with open(temp_file, 'w') as f:
+            f.write(swift_code)
 
-    try:
-        # Run Swift code
         result = subprocess.run(
             ['swift', temp_file],
             capture_output=True,
@@ -151,13 +152,6 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
             raise XCodeMCPError(f"Failed to get window list: {result.stderr}")
 
         output = result.stdout
-
-    finally:
-        # Clean up temp file
-        try:
-            os.unlink(temp_file)
-        except OSError:
-            pass
 
     # Check for error
     if output.startswith("ERROR:"):

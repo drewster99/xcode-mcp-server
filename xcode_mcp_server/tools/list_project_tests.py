@@ -8,6 +8,7 @@ import sys
 
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
+from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 
@@ -40,47 +41,51 @@ def list_project_tests(project_path: str) -> str:
             text=True,
             timeout=10
         )
-
-        if result.returncode == 0 and result.stdout:
-            test_files = result.stdout.strip().split('\n')
-
-            # Parse test files to extract test methods
-            tests = []
-            for file_path in test_files:
-                if file_path and os.path.exists(file_path):
-                    try:
-                        with open(file_path, 'r') as f:
-                            content = f.read()
-                            # Extract test class name from filename
-                            filename = os.path.basename(file_path)
-                            class_name = filename.replace('.swift', '')
-
-                            # Find test methods (simple regex)
-                            test_methods = re.findall(r'func\s+(test\w+)\s*\(', content)
-
-                            for method in test_methods:
-                                # Guess bundle name from path
-                                if 'UITests' in file_path:
-                                    bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}UITests"
-                                else:
-                                    bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}Tests"
-
-                                tests.append(f"{bundle}/{class_name}/{method}")
-                    except (OSError, UnicodeDecodeError) as e:
-                        print(f"warn: failed to parse test file {file_path}: {e}", file=sys.stderr)
-                        continue
-
-            if tests:
-                test_count = len(tests)
-                show_result_notification(f"Found {test_count} test{'s' if test_count != 1 else ''}", os.path.basename(project_path))
-                result = "\n".join(sorted(tests))
-                result += "\n\nUse `run_project_tests` to run all tests or pass specific test identifiers to run selected tests."
-                return result
-
-        show_result_notification("Found 0 tests", os.path.basename(project_path))
-        return f"Could not find test files for project: {os.path.basename(project_path)}\n" + \
-               "Make sure your test files follow naming convention (*Test.swift or *Tests.swift)"
-
-    except Exception as e:
+    except subprocess.TimeoutExpired:
+        show_error_notification("Error listing tests", "find command timed out")
+        raise XCodeMCPError(
+            f"Timed out searching for test files in {os.path.basename(project_path)}"
+        )
+    except (OSError, subprocess.SubprocessError) as e:
         show_error_notification("Error listing tests", str(e))
-        return f"Error listing tests: {str(e)}"
+        raise XCodeMCPError(f"Error listing tests for {os.path.basename(project_path)}: {e}")
+
+    if result.returncode == 0 and result.stdout:
+        test_files = result.stdout.strip().split('\n')
+
+        # Parse test files to extract test methods
+        tests = []
+        for file_path in test_files:
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r') as f:
+                        content = f.read()
+                        # Extract test class name from filename
+                        filename = os.path.basename(file_path)
+                        class_name = filename.replace('.swift', '')
+
+                        # Find test methods (simple regex)
+                        test_methods = re.findall(r'func\s+(test\w+)\s*\(', content)
+
+                        for method in test_methods:
+                            # Guess bundle name from path
+                            if 'UITests' in file_path:
+                                bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}UITests"
+                            else:
+                                bundle = f"{os.path.basename(project_path).replace('.xcodeproj', '').replace('.xcworkspace', '')}Tests"
+
+                            tests.append(f"{bundle}/{class_name}/{method}")
+                except (OSError, UnicodeDecodeError) as e:
+                    print(f"warn: failed to parse test file {file_path}: {e}", file=sys.stderr)
+                    continue
+
+        if tests:
+            test_count = len(tests)
+            show_result_notification(f"Found {test_count} test{'s' if test_count != 1 else ''}", os.path.basename(project_path))
+            result = "\n".join(sorted(tests))
+            result += "\n\nUse `run_project_tests` to run all tests or pass specific test identifiers to run selected tests."
+            return result
+
+    show_result_notification("Found 0 tests", os.path.basename(project_path))
+    return f"Could not find test files for project: {os.path.basename(project_path)}\n" + \
+           "Make sure your test files follow naming convention (*Test.swift or *Tests.swift)"

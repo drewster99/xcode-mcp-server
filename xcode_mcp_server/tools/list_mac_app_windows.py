@@ -65,13 +65,14 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
 }
 '''
 
-        # Write Swift code to temporary file and execute
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.swift', delete=False) as f:
-            f.write(swift_code)
-            temp_file = f.name
+        # Use a TemporaryDirectory so cleanup is guaranteed by the OS even
+        # if we exit the context on an unhandled error (SIGKILL still leaks,
+        # but normal errors no longer require finally bookkeeping).
+        with tempfile.TemporaryDirectory(prefix='xcode-mcp-swift-') as tmpdir:
+            temp_file = os.path.join(tmpdir, 'list_windows.swift')
+            with open(temp_file, 'w') as f:
+                f.write(swift_code)
 
-        try:
-            # Run Swift code
             result = subprocess.run(
                 ['swift', temp_file],
                 capture_output=True,
@@ -84,13 +85,6 @@ for (app, windows) in appWindows.sorted(by: { $0.key < $1.key }) {
                 raise XCodeMCPError(f"Failed to get window list: {result.stderr}")
 
             output = result.stdout
-
-        finally:
-            # Clean up temp file
-            try:
-                os.unlink(temp_file)
-            except OSError:
-                pass
 
         # Check for error
         if output.startswith("ERROR:"):

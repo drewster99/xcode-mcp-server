@@ -11,17 +11,41 @@ import datetime
 from typing import Optional, Tuple
 
 from xcode_mcp_server.exceptions import InvalidParameterError
+from xcode_mcp_server.utils.paths import LOG_DIR
 
-# Global build warning settings - initialized by CLI
+# Global build warning settings - initialized by CLI.
+# These are set once during startup and then read by every concurrent build
+# tool invocation. We use a one-way latch (`_BUILD_WARNINGS_LOCKED`) to make
+# the "set once" contract enforceable: once the CLI calls
+# freeze_build_warnings_settings() before mcp.run(), any subsequent mutation
+# is a programming error and raises rather than racing readers.
 BUILD_WARNINGS_ENABLED = True
 BUILD_WARNINGS_FORCED = None  # True if forced on, False if forced off, None if not forced
+_BUILD_WARNINGS_LOCKED = False
 
 
 def set_build_warnings_enabled(enabled: bool, forced: bool = False):
-    """Set the global build warnings setting"""
+    """Set the global build warnings setting.
+
+    Must be called during CLI startup, before freeze_build_warnings_settings()
+    is invoked. After freezing, this raises to prevent accidental concurrent
+    mutation by tool code.
+    """
     global BUILD_WARNINGS_ENABLED, BUILD_WARNINGS_FORCED
+    if _BUILD_WARNINGS_LOCKED:
+        raise RuntimeError(
+            "Build warning settings are frozen after server startup; "
+            "set_build_warnings_enabled must be called before mcp.run()."
+        )
     BUILD_WARNINGS_ENABLED = enabled
     BUILD_WARNINGS_FORCED = enabled if forced else None
+
+
+def freeze_build_warnings_settings():
+    """Lock further mutation of BUILD_WARNINGS_*. Called by the CLI right
+    before the FastMCP run loop starts."""
+    global _BUILD_WARNINGS_LOCKED
+    _BUILD_WARNINGS_LOCKED = True
 
 
 def extract_console_logs_from_xcresult(xcresult_path: str,
@@ -156,12 +180,11 @@ def _format_structured_logs(all_logs: list, xcresult_path: str,
         else:
             others.append(log)
 
-    # Write complete UNFILTERED plaintext log to temp file
-    log_dir = "/tmp/xcode-mcp-server/logs"
-    os.makedirs(log_dir, exist_ok=True)
+    # Write complete UNFILTERED plaintext log to a per-user cache directory.
+    os.makedirs(LOG_DIR, exist_ok=True)
 
     xcresult_hash = hashlib.md5(xcresult_path.encode()).hexdigest()[:8]
-    temp_log_path = os.path.join(log_dir, f"runtime-{xcresult_hash}.txt")
+    temp_log_path = os.path.join(LOG_DIR, f"runtime-{xcresult_hash}.txt")
 
     try:
         with open(temp_log_path, 'w') as f:
@@ -329,7 +352,7 @@ def extract_build_errors_and_warnings(build_log: str,
     This avoids false positives from Objective-C method signatures like error:(NSError**)error
     and code snippets in warning messages.
 
-    Writes the complete unfiltered build log to /tmp/xcode-mcp-server/logs/build-{hash}.txt
+    Writes the complete unfiltered build log to ~/Library/Caches/xcode-mcp-server/logs/build-{hash}.txt
     for full analysis.
 
     Prioritizes errors over warnings: shows up to max_lines total with errors first, then
@@ -350,7 +373,7 @@ def extract_build_errors_and_warnings(build_log: str,
     Returns:
         JSON string with format:
         {
-            "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
+            "full_log_path": "~/Library/Caches/xcode-mcp-server/logs/build-{hash}.txt",
             "summary": {
                 "build_failed": bool,
                 "total_errors": N,
@@ -372,12 +395,11 @@ def extract_build_errors_and_warnings(build_log: str,
         # No forcing, use function parameter or default
         show_warnings = include_warnings if include_warnings is not None else BUILD_WARNINGS_ENABLED
 
-    # Write complete UNFILTERED build log to temp file
-    log_dir = "/tmp/xcode-mcp-server/logs"
-    os.makedirs(log_dir, exist_ok=True)
+    # Write complete UNFILTERED build log to a per-user cache directory.
+    os.makedirs(LOG_DIR, exist_ok=True)
 
     build_hash = hashlib.md5(build_log.encode()).hexdigest()[:8]
-    temp_log_path = os.path.join(log_dir, f"build-{build_hash}.txt")
+    temp_log_path = os.path.join(LOG_DIR, f"build-{build_hash}.txt")
 
     try:
         with open(temp_log_path, 'w') as f:
@@ -517,9 +539,72 @@ def extract_build_errors_and_warnings(build_log: str,
 # missing package products).
 
 
+def _find_most_recent_xcresult(project_path: str, logs_subdir: str) -> Optional[str]:
+    """
+    Find the globally most-recent .xcresult file across every DerivedData
+    directory whose name starts with the project name.
+
+    Xcode regenerates the random-hash suffix when a project moves or its Xcode
+    version changes, so multiple matching DerivedData directories can coexist.
+    Iterating and returning on the first match (the prior behavior) is
+    non-deterministic — `os.listdir` order is filesystem-defined.
+
+    Args:
+        project_path: Path to .xcodeproj or .xcworkspace
+        logs_subdir: Either "Launch" (runtime logs) or "Test" (test results)
+
+    Returns:
+        Path to the most-recent matching .xcresult, or None.
+    """
+    normalized_path = os.path.realpath(project_path)
+    project_name = (
+        os.path.basename(normalized_path)
+        .replace('.xcworkspace', '')
+        .replace('.xcodeproj', '')
+    )
+    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
+
+    if not os.path.exists(derived_data_base):
+        return None
+
+    try:
+        entries = os.listdir(derived_data_base)
+    except OSError as e:
+        print(
+            f"Error listing DerivedData base {derived_data_base}: {e}",
+            file=sys.stderr,
+        )
+        return None
+
+    candidates = []
+    for derived_dir in entries:
+        if not derived_dir.startswith(project_name + "-"):
+            continue
+        logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", logs_subdir)
+        if not os.path.isdir(logs_dir):
+            continue
+        try:
+            for f in os.listdir(logs_dir):
+                if not f.endswith('.xcresult'):
+                    continue
+                full_path = os.path.join(logs_dir, f)
+                try:
+                    candidates.append((os.path.getmtime(full_path), full_path))
+                except OSError:
+                    continue
+        except OSError as e:
+            print(f"Error listing {logs_dir}: {e}", file=sys.stderr)
+            continue
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 def find_xcresult_for_project(project_path: str) -> Optional[str]:
     """
-    Find the most recent xcresult file for a given project.
+    Find the most recent runtime-launch xcresult file for a given project.
 
     Args:
         project_path: Path to the .xcodeproj or .xcworkspace
@@ -527,35 +612,7 @@ def find_xcresult_for_project(project_path: str) -> Optional[str]:
     Returns:
         Path to the most recent xcresult file, or None if not found
     """
-    # Normalize and get project name
-    normalized_path = os.path.realpath(project_path)
-    project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
-
-    # Find the most recent xcresult file in DerivedData
-    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
-
-    # Look for directories matching the project name
-    # DerivedData directories typically have format: ProjectName-randomhash
-    try:
-        for derived_dir in os.listdir(derived_data_base):
-            # More precise matching: must start with project name followed by a dash
-            if derived_dir.startswith(project_name + "-"):
-                logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", "Launch")
-                if os.path.exists(logs_dir):
-                    # Find the most recent .xcresult file
-                    xcresult_files = []
-                    for f in os.listdir(logs_dir):
-                        if f.endswith('.xcresult'):
-                            full_path = os.path.join(logs_dir, f)
-                            xcresult_files.append((os.path.getmtime(full_path), full_path))
-
-                    if xcresult_files:
-                        xcresult_files.sort(reverse=True)
-                        return xcresult_files[0][1]
-    except Exception as e:
-        print(f"Error searching for xcresult: {e}", file=sys.stderr)
-
-    return None
+    return _find_most_recent_xcresult(project_path, logs_subdir="Launch")
 
 
 def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int) -> Optional[str]:
@@ -631,7 +688,7 @@ def format_test_identifier(bundle: str, class_name: str = None, method: str = No
 
 def find_xcresult_bundle(project_path: str, wait_seconds: int = 10) -> Optional[str]:
     """
-    Find the most recent .xcresult bundle for the project.
+    Find the most recent test-run .xcresult bundle for the project.
 
     Args:
         project_path: Path to the Xcode project
@@ -641,37 +698,7 @@ def find_xcresult_bundle(project_path: str, wait_seconds: int = 10) -> Optional[
     Returns:
         Path to the most recent xcresult bundle or None if not found
     """
-    # Normalize and get project name
-    normalized_path = os.path.realpath(project_path)
-    project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
-
-    # Find the most recent xcresult file in DerivedData
-    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
-
-    # Look for directories matching the project name
-    # DerivedData directories typically have format: ProjectName-randomhash
-    try:
-        for derived_dir in os.listdir(derived_data_base):
-            # More precise matching: must start with project name followed by a dash
-            if derived_dir.startswith(project_name + "-"):
-                logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", "Test")
-                if os.path.exists(logs_dir):
-                    # Find the most recent .xcresult file
-                    xcresult_files = []
-                    for f in os.listdir(logs_dir):
-                        if f.endswith('.xcresult'):
-                            full_path = os.path.join(logs_dir, f)
-                            xcresult_files.append((os.path.getmtime(full_path), full_path))
-
-                    if xcresult_files:
-                        xcresult_files.sort(reverse=True)
-                        most_recent = xcresult_files[0][1]
-                        print(f"DEBUG: Found xcresult bundle at {most_recent}", file=sys.stderr)
-                        return most_recent
-    except Exception as e:
-        print(f"Error searching for xcresult: {e}", file=sys.stderr)
-
-    return None
+    return _find_most_recent_xcresult(project_path, logs_subdir="Test")
 
 
 def extract_test_results_from_xcresult(xcresult_path: str) -> Tuple[bool, str]:
@@ -682,26 +709,34 @@ def extract_test_results_from_xcresult(xcresult_path: str) -> Tuple[bool, str]:
         xcresult_path: Path to the .xcresult bundle
 
     Returns:
-        Tuple of (success, json_output_or_error_message)
-        JSON format:
+        Tuple of (success, json_output_or_error_message).
+        JSON shape:
         {
             "xcresult_path": "...",
             "summary": {
                 "total_tests": N,
                 "passed": M,
                 "failed": K,
-                "skipped": L
+                "skipped": L,
+                "other": {"count": X, "statuses": ["Expected Failure", ...]}
             },
             "failed_tests": [
                 {
                     "test_name": "Bundle/Class/method",
                     "duration": "0.5s",
-                    "failure_message": "...",
-                    "file": "...",
-                    "line": 42
+                    "failure_message": "msg1\\nmsg2",
+                    "failures": [
+                        {"message": "msg1", "file": "...", "line": 42},
+                        {"message": "msg2", "file": "...", "line": 99}
+                    ]
                 }
             ]
         }
+        The summary.other key only appears when at least one test has a
+        non-standard result status (Xcode 16 Swift Testing emits these).
+        The failures array preserves per-failure file/line for tests with
+        multiple asserts; failure_message is a newline-joined convenience
+        copy of the messages.
     """
     try:
         # Extract test results from xcresult bundle
@@ -784,18 +819,29 @@ def extract_test_results_from_xcresult(xcresult_path: str) -> Tuple[bool, str]:
     for test_node in test_data.get('testNodes', []):
         all_tests.extend(walk_test_nodes(test_node))
 
-    # Categorize tests
+    # Categorize tests. Xcode 16+ Swift Testing emits statuses beyond the
+    # classic Passed/Failed/Skipped trio (e.g. "Expected Failure"); anything
+    # we don't recognize lands in `other` so the buckets sum to total_tests.
     passed_tests = [t for t in all_tests if t['result'] in ['Passed', 'Success']]
     failed_tests = [t for t in all_tests if t['result'] in ['Failed', 'Failure']]
     skipped_tests = [t for t in all_tests if t['result'] in ['Skipped']]
+    classified = {id(t) for t in passed_tests + failed_tests + skipped_tests}
+    other_tests = [t for t in all_tests if id(t) not in classified]
 
     # Build summary
     summary = {
         'total_tests': len(all_tests),
         'passed': len(passed_tests),
         'failed': len(failed_tests),
-        'skipped': len(skipped_tests)
+        'skipped': len(skipped_tests),
     }
+
+    if other_tests:
+        other_statuses = sorted({t['result'] for t in other_tests})
+        summary['other'] = {
+            'count': len(other_tests),
+            'statuses': other_statuses,
+        }
 
     # Format failed tests for output
     failed_test_details = []
@@ -805,20 +851,22 @@ def extract_test_results_from_xcresult(xcresult_path: str) -> Tuple[bool, str]:
             'duration': test['duration']
         }
 
-        # Add failure details
+        # Preserve every failure with its own location. Earlier code wrote
+        # `test_detail['file']`/`['line']` flat, which silently lost all but
+        # the last failure's location when a test had multiple asserts.
         if 'failures' in test and test['failures']:
-            # Combine all failure messages
-            messages = []
+            failure_details = []
             for failure in test['failures']:
-                messages.append(failure['message'])
-
-                # Add file/line info if available
+                detail = {'message': failure.get('message', 'Unknown failure')}
                 if 'file' in failure:
-                    test_detail['file'] = failure['file']
+                    detail['file'] = failure['file']
                 if 'line' in failure:
-                    test_detail['line'] = failure['line']
+                    detail['line'] = failure['line']
+                failure_details.append(detail)
 
-            test_detail['failure_message'] = '\n'.join(messages)
+            test_detail['failures'] = failure_details
+            # Keep a flat failure_message for clients that read it directly.
+            test_detail['failure_message'] = '\n'.join(d['message'] for d in failure_details)
         else:
             test_detail['failure_message'] = 'Test failed (no failure message available)'
 

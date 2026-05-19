@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import os
-import sys
 import json
 import hashlib
 import inspect
+import tempfile
+import threading
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Any, Dict, List, Set
@@ -36,20 +37,32 @@ class ConfigManager:
     """
 
     _instance = None
+    _instance_lock = threading.Lock()
     _config_dir = Path.home() / ".xcode-mcp-server"
 
     def __new__(cls):
+        # Double-checked locking: cheap fast path once the singleton exists,
+        # serialized construction-and-init otherwise. FastMCP dispatches sync
+        # tools onto a threadpool, so two threads can race on first
+        # construction. All one-time setup — including `_tool_registry` — is
+        # done here under the lock so a second concurrent constructor call
+        # can't run __init__ a second time and clobber the first thread's
+        # registrations.
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._instance_lock:
+                if cls._instance is None:
+                    instance = super().__new__(cls)
+                    instance._tool_registry = {}
+                    instance._ensure_config_dir_exists()
+                    instance._initialized = True
+                    cls._instance = instance
         return cls._instance
 
     def __init__(self):
-        if self._initialized:
-            return
-        self._ensure_config_dir_exists()
-        self._tool_registry = {}  # Will be populated by decorator
-        self._initialized = True
+        # All one-time setup happens in __new__ under the singleton lock; a
+        # no-op __init__ keeps construction atomic against repeated
+        # `ConfigManager()` calls from concurrent threadpool tools.
+        return
 
     # === INTERNAL ===
 
@@ -79,10 +92,35 @@ class ConfigManager:
             return None
 
     def _save_config_file(self, file_path: Path, data: dict):
-        """Write config JSON file"""
+        """Write config JSON file atomically.
+
+        Writes to a sibling temp file then `os.replace`s into place so a crash
+        or concurrent write can't leave the destination truncated or partially
+        written. `os.replace` is atomic on POSIX when source and destination
+        are on the same filesystem, which is guaranteed here because the temp
+        file is created in `file_path.parent`.
+        """
         self._ensure_config_dir_exists()
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        file_path = Path(file_path)
+        tmp = tempfile.NamedTemporaryFile(
+            mode='w',
+            dir=file_path.parent,
+            prefix=file_path.name + '.',
+            suffix='.tmp',
+            delete=False,
+        )
+        try:
+            json.dump(data, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp.close()
+            os.replace(tmp.name, file_path)
+        except Exception:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
 
     def _create_empty_config(self, level_type: str, name: str, path: str) -> dict:
         """Create an empty config structure"""
@@ -419,38 +457,14 @@ def apply_config(func):
             from xcode_mcp_server.exceptions import XCodeMCPError
             raise XCodeMCPError(f"{func.__name__} is disabled in configuration")
 
-        # Apply parameter overrides (track which ones for debugging)
-        overridden_params = []
+        # Apply parameter overrides
         for param_name in sig.parameters:
             override = config.get_parameter_override(func.__name__, param_name, project_path)
             if override is not None:
-                overridden_params.append(f"{param_name}={override}")
                 bound.arguments[param_name] = override
 
         # Check if notification should be shown
         should_notify = config.should_show_notification(func.__name__, project_path)
-
-        # DEBUG: Show configuration info in alert
-        import subprocess
-        debug_lines = [
-            "[apply_config DEBUG]",
-            f"Function: {func.__name__}",
-            f"Project: {project_path or 'None'}",
-            f"Show notification: {should_notify}",
-            f"Overridden params: {', '.join(overridden_params) if overridden_params else 'None'}"
-        ]
-        debug_msg = "\\n".join(debug_lines)
-
-        # Print to stderr
-        print(debug_msg.replace("\\n", "\n"), file=sys.stderr)
-
-        # Show in AppleScript alert (temporary debugging)
-        # try:
-        #     alert_script = f'display alert "apply_config Debug" message "{debug_msg}"'
-        #     # No timeout - let the user dismiss it when ready
-        #     subprocess.run(['osascript', '-e', alert_script], capture_output=True)
-        # except:
-        #     pass  # Ignore alert errors
 
         # Set tool context for this execution
         context = {

@@ -8,10 +8,12 @@ import sys
 from xcode_mcp_server.server import mcp
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.utils.applescript import get_notification_history
+from xcode_mcp_server.utils.paths import DEBUG_DIR
 
-# Stable path so repeated invocations overwrite a single file instead of
-# leaking a fresh /tmp file each call.
-NOTIFICATION_HISTORY_FILE = "/tmp/xcode-mcp-server/notification-history.txt"
+# Stable path under the per-user cache directory so repeated invocations
+# overwrite a single file instead of leaking files on each call, and the
+# contents are not world-readable like /tmp.
+NOTIFICATION_HISTORY_FILE = os.path.join(DEBUG_DIR, "notification-history.txt")
 
 
 @mcp.tool()

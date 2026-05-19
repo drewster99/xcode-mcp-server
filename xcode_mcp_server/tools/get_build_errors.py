@@ -30,7 +30,7 @@ def get_build_errors(project_path: str,
         If no build has been performed: Returns plain text message.
         Otherwise, returns JSON string with format:
         {
-            "full_log_path": "/tmp/xcode-mcp-server/logs/build-{hash}.txt",
+            "full_log_path": "~/Library/Caches/xcode-mcp-server/logs/build-{hash}.txt",
             "summary": {"total_errors": N, "total_warnings": M, "showing_errors": X, "showing_warnings": Y},
             "errors_and_warnings": "Build succeeded/failed with N errors...\nerror: ...\n..."
         }

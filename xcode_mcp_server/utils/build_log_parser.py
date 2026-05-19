@@ -7,6 +7,8 @@ import time
 import gzip
 import re
 import plistlib
+import threading
+from collections import OrderedDict
 from typing import List, Dict, Set, Tuple, Optional
 
 # Seconds between the Unix epoch (1970-01-01) and the Cocoa/CFAbsoluteTime
@@ -24,6 +26,38 @@ _SOURCE_EXTS = (
 )
 _SOURCE_EXT_ALT = '|'.join(_SOURCE_EXTS)
 
+# Process-lifetime cache for parse_xcactivitylog results. xcactivitylog files
+# are written once by Xcode and never mutated, so a path+stat key is a stable
+# cache identity for the file's lifetime. Bounded to keep memory predictable
+# under long-running MCP sessions; LRU eviction discards the least-recently
+# used entries first.
+_XCACTIVITYLOG_CACHE_MAX = 200
+_XCACTIVITYLOG_CACHE: "OrderedDict[Tuple[str, int, int], Tuple[List[Dict], Set[str]]]" = OrderedDict()
+_XCACTIVITYLOG_CACHE_LOCK = threading.Lock()
+
+
+def _xcactivitylog_cache_key(log_path: str) -> Optional[Tuple[str, int, int]]:
+    """Return a cache key for `log_path`, or None if the file isn't stat-able.
+
+    The key uses mtime_ns + size so that if a path is ever reused (unlikely —
+    Xcode names logs by UUID — but cheap insurance) the cache rejects a stale
+    hit instead of returning data from the previous occupant.
+    """
+    try:
+        st = os.stat(log_path)
+    except OSError:
+        return None
+    return (log_path, st.st_mtime_ns, st.st_size)
+
+
+class ManifestParseError(Exception):
+    """Raised when a LogStoreManifest.plist exists but cannot be parsed.
+
+    Distinct from "the manifest doesn't exist yet" (the function returns []
+    in that case), so callers can surface "warnings unavailable: manifest
+    corrupted" rather than implying no prior builds happened.
+    """
+
 
 def parse_manifest_plist(manifest_path: str) -> List[Dict]:
     """
@@ -33,39 +67,57 @@ def parse_manifest_plist(manifest_path: str) -> List[Dict]:
         manifest_path: Path to LogStoreManifest.plist
 
     Returns:
-        List of build metadata dictionaries, sorted chronologically by timeStartedRecording.
-        Each dict contains: uuid, fileName, timeStartedRecording, title, errors, warnings, status
+        List of build metadata dictionaries, sorted chronologically by
+        timeStartedRecording. Each dict contains: uuid, fileName,
+        timeStartedRecording, title, errors, warnings, status.
+
+        Returns an empty list when the manifest file is missing (the
+        first-build case).
+
+    Raises:
+        ManifestParseError: When the manifest exists but cannot be read or
+            parsed (corrupted, mid-write, permission denied). Callers should
+            surface this distinct from the empty case.
     """
+    if not os.path.exists(manifest_path):
+        return []
+
     try:
         with open(manifest_path, 'rb') as f:
             plist_data = plistlib.load(f)
+    except (plistlib.InvalidFileException, OSError, ValueError) as e:
+        print(f"Error parsing manifest plist {manifest_path}: {e}", file=sys.stderr)
+        raise ManifestParseError(str(e)) from e
 
-        builds = []
-        logs = plist_data.get('logs', {})
+    builds = []
+    logs = plist_data.get('logs', {}) if isinstance(plist_data, dict) else {}
 
-        for uuid, log_entry in logs.items():
-            primary = log_entry.get('primaryObservable', {})
+    for uuid, log_entry in logs.items():
+        # Defensive: Xcode is the only writer, but a partially-corrupted entry
+        # (or a future schema change that nests differently) shouldn't take
+        # down the whole parse — skip and continue.
+        if not isinstance(log_entry, dict):
+            continue
+        primary = log_entry.get('primaryObservable', {})
+        if not isinstance(primary, dict):
+            primary = {}
 
-            build_info = {
-                'uuid': uuid,
-                'fileName': log_entry.get('fileName', ''),
-                'timeStartedRecording': log_entry.get('timeStartedRecording', 0),
-                'title': log_entry.get('title', ''),
-                'errors': primary.get('totalNumberOfErrors', 0),
-                'warnings': primary.get('totalNumberOfWarnings', 0),
-                'status': primary.get('highLevelStatus', 'U')  # S=Success, W=Warning, E=Error, U=Unknown
-            }
+        build_info = {
+            'uuid': uuid,
+            'fileName': log_entry.get('fileName', ''),
+            'timeStartedRecording': log_entry.get('timeStartedRecording', 0),
+            'title': log_entry.get('title', ''),
+            'errors': primary.get('totalNumberOfErrors', 0),
+            'warnings': primary.get('totalNumberOfWarnings', 0),
+            'status': primary.get('highLevelStatus', 'U')  # S=Success, W=Warning, E=Error, U=Unknown
+        }
 
-            builds.append(build_info)
+        builds.append(build_info)
 
-        # Sort chronologically by timeStartedRecording
-        builds.sort(key=lambda x: x['timeStartedRecording'])
+    # Sort chronologically by timeStartedRecording
+    builds.sort(key=lambda x: x['timeStartedRecording'])
 
-        return builds
-
-    except Exception as e:
-        print(f"Error parsing manifest plist: {e}", file=sys.stderr)
-        return []
+    return builds
 
 
 def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
@@ -73,7 +125,12 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
     Parse an .xcactivitylog file to extract warnings and compiled files.
 
     The log files are gzip-compressed and contain both binary and text data.
-    We use gzip to decompress and then extract text with error handling for binary data.
+    We use gzip to decompress and then extract text with error handling for
+    binary data.
+
+    Results are cached for the process lifetime keyed on path+mtime+size, so
+    re-aggregating across the same N immutable build logs after the first call
+    is essentially free.
 
     Args:
         log_path: Path to the .xcactivitylog file
@@ -83,16 +140,30 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
         - warnings_list: List of dicts with keys: file, line, column, message
         - compiled_files_set: Set of file paths that were compiled in this build
     """
+    cache_key = _xcactivitylog_cache_key(log_path)
+    if cache_key is not None:
+        with _XCACTIVITYLOG_CACHE_LOCK:
+            hit = _XCACTIVITYLOG_CACHE.get(cache_key)
+            if hit is not None:
+                # Move to end so LRU eviction prefers older keys.
+                _XCACTIVITYLOG_CACHE.move_to_end(cache_key)
+                cached_warnings, cached_compiled = hit
+                # Return copies so callers can't mutate the cache. Warnings
+                # are dicts; aggregate_warnings_since_clean mutates entries to
+                # attach build_uuid/build_time, so a shallow copy of each
+                # dict is required.
+                return [dict(w) for w in cached_warnings], set(cached_compiled)
+
     warnings = []
     compiled_files = set()
 
-    # Path char class: any printable byte except control bytes, the U+FFFD
-    # replacement character (binary bytes after errors='replace' decode), the
-    # path-list/colon separators, and a few characters Xcode's log format uses
-    # as field separators between the path and following metadata.
-    # This still allows spaces, parentheses inside paths, etc., because we
-    # anchor the end of the match to a known terminator below.
-    path_char = r'[^\r\n\x00-\x1f�]'
+    # Path char class: any printable byte except control bytes and the
+    # path-list/colon separators. We deliberately do NOT exclude U+FFFD here
+    # — `errors='surrogateescape'` keeps undecodable bytes as low-surrogate
+    # code points (\udc80–\udcff), so the replacement char (U+FFFD, �)
+    # only appears if it was literally in the source file. Excluding it would
+    # silently truncate paths whenever a single non-UTF-8 byte appears nearby.
+    path_char = r'[^\r\n\x00-\x1f]'
 
     # Warning/error lines:
     #   /abs/path/to/File.ext:LINE:COL: warning|error: message
@@ -100,11 +171,12 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
     # naturally terminates the path at the right place even when it contains
     # spaces. Limit the message to non-control characters so we don't slurp
     # binary trailing bytes.
+    msg_char = r'[^\n\r\x00-\x08\x0b-\x1f]'
     warning_pattern = re.compile(
-        rf'(/{path_char}+?\.(?:{_SOURCE_EXT_ALT})):(\d+):(\d+): warning: ([^\n\r\x00-\x08\x0b-\x1f�]+)'
+        rf'(/{path_char}+?\.(?:{_SOURCE_EXT_ALT})):(\d+):(\d+): warning: ({msg_char}+)'
     )
     error_pattern = re.compile(
-        rf'(/{path_char}+?\.(?:{_SOURCE_EXT_ALT})):(\d+):(\d+): error: ([^\n\r\x00-\x08\x0b-\x1f�]+)'
+        rf'(/{path_char}+?\.(?:{_SOURCE_EXT_ALT})):(\d+):(\d+): error: ({msg_char}+)'
     )
 
     # SwiftCompile lines:
@@ -126,55 +198,74 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
         rf'CompileMetalFile (/{path_char}+?\.metal)(?= \(in target|\s*[\r\n]|\s*$)'
     )
 
+    def _strip_surrogates(s: str) -> str:
+        """Drop lone surrogates introduced by surrogateescape so output is valid UTF-8."""
+        return s.encode('utf-8', errors='replace').decode('utf-8', errors='replace')
+
     try:
         with gzip.open(log_path, 'rb') as f:
-            # Read the file and decode with error handling for binary data
             content = f.read()
-            # Use 'replace' to handle binary data gracefully
-            text = content.decode('utf-8', errors='replace')
 
-            # Extract warnings
-            for match in warning_pattern.finditer(text):
-                file_path = match.group(1)
-                line = int(match.group(2))
-                column = int(match.group(3))
-                message = match.group(4).strip()
+        # Decode with surrogateescape so non-UTF-8 bytes survive as lone
+        # surrogates instead of collapsing into U+FFFD. That way a single
+        # stray byte doesn't terminate a regex match for the surrounding
+        # text.
+        text = content.decode('utf-8', errors='surrogateescape')
 
-                warnings.append({
-                    'file': file_path,
-                    'line': line,
-                    'column': column,
-                    'message': message,
-                    'type': 'warning'
-                })
+        # xcactivitylog uses \r as a line separator (not \n), so the file
+        # decodes to one logical "line" tens of megabytes long. Running the
+        # non-greedy multi-extension regex over the whole blob causes
+        # catastrophic backtracking — measured at ~8s per file. Pre-splitting
+        # on the actual separators and skipping lines that obviously can't
+        # contain a match drops that to tens of milliseconds.
+        lines = text.replace('\n', '\r').split('\r')
 
-            # Extract errors (in case we want to support them later)
-            for match in error_pattern.finditer(text):
-                file_path = match.group(1)
-                line = int(match.group(2))
-                column = int(match.group(3))
-                message = match.group(4).strip()
+        for raw_line in lines:
+            if ': warning:' in raw_line:
+                for match in warning_pattern.finditer(raw_line):
+                    warnings.append({
+                        'file': _strip_surrogates(match.group(1)),
+                        'line': int(match.group(2)),
+                        'column': int(match.group(3)),
+                        'message': _strip_surrogates(match.group(4).strip()),
+                        'type': 'warning',
+                    })
+            if ': error:' in raw_line:
+                for match in error_pattern.finditer(raw_line):
+                    warnings.append({
+                        'file': _strip_surrogates(match.group(1)),
+                        'line': int(match.group(2)),
+                        'column': int(match.group(3)),
+                        'message': _strip_surrogates(match.group(4).strip()),
+                        'type': 'error',
+                    })
+            if 'SwiftCompile normal ' in raw_line:
+                for match in swift_compile_pattern.finditer(raw_line):
+                    compiled_files.add(_strip_surrogates(match.group(1)))
+            if 'CompileC ' in raw_line or 'CompileCpp ' in raw_line \
+                    or 'CompileObjC ' in raw_line or 'CompileObjCpp ' in raw_line:
+                for match in cc_compile_pattern.finditer(raw_line):
+                    compiled_files.add(_strip_surrogates(match.group(1)))
+            if 'CompileMetalFile ' in raw_line:
+                for match in metal_compile_pattern.finditer(raw_line):
+                    compiled_files.add(_strip_surrogates(match.group(1)))
 
-                warnings.append({
-                    'file': file_path,
-                    'line': line,
-                    'column': column,
-                    'message': message,
-                    'type': 'error'
-                })
-
-            # Extract compiled files (Swift, ObjC/C/C++, Metal)
-            for match in swift_compile_pattern.finditer(text):
-                compiled_files.add(match.group(1))
-            for match in cc_compile_pattern.finditer(text):
-                compiled_files.add(match.group(1))
-            for match in metal_compile_pattern.finditer(text):
-                compiled_files.add(match.group(1))
-
-    except Exception as e:
+    except (OSError, gzip.BadGzipFile, EOFError) as e:
         print(f"Error parsing xcactivitylog {log_path}: {e}", file=sys.stderr)
+        # Don't cache parse failures — a transient read error on a still-
+        # finalizing file shouldn't poison subsequent lookups.
+        return warnings, compiled_files
 
-    return warnings, compiled_files
+    if cache_key is not None:
+        with _XCACTIVITYLOG_CACHE_LOCK:
+            _XCACTIVITYLOG_CACHE[cache_key] = (warnings, compiled_files)
+            _XCACTIVITYLOG_CACHE.move_to_end(cache_key)
+            while len(_XCACTIVITYLOG_CACHE) > _XCACTIVITYLOG_CACHE_MAX:
+                _XCACTIVITYLOG_CACHE.popitem(last=False)
+
+    # Return shallow copies so callers can attach per-aggregation fields
+    # (build_uuid, build_time) without mutating cached values.
+    return [dict(w) for w in warnings], set(compiled_files)
 
 
 def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
@@ -199,14 +290,24 @@ def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
         - recompiled_files: List of files that were recompiled and excluded
         - builds_analyzed: List of build metadata
     """
-    # Parse manifest
-    builds = parse_manifest_plist(manifest_path)
+    # Parse manifest. Surface "exists but corrupted/unreadable" distinctly
+    # from "no prior builds" so the caller can label warnings correctly.
+    try:
+        builds = parse_manifest_plist(manifest_path)
+    except ManifestParseError as e:
+        return {
+            'summary': {
+                'total_builds': 0,
+                'error': f'Manifest exists but could not be parsed: {e}',
+                'manifest_unreadable': True,
+            }
+        }
 
     if not builds:
         return {
             'summary': {
                 'total_builds': 0,
-                'error': 'Failed to parse manifest or no builds found'
+                'error': 'No prior builds found',
             }
         }
 
@@ -434,32 +535,55 @@ def find_derived_data_for_project(project_path: str) -> Optional[str]:
     """
     Find the DerivedData directory for a given project.
 
+    Xcode regenerates the random-hash suffix when a project moves on disk or
+    its Xcode version changes, so multiple matching directories can exist for
+    the same project name. Among matches, pick the one whose
+    `Logs/Build/LogStoreManifest.plist` has the most recent mtime (falling
+    back to the directory's own mtime when no manifest is present). Picking
+    the wrong DerivedData yields the wrong build logs.
+
     Args:
         project_path: Path to .xcodeproj or .xcworkspace
 
     Returns:
-        Path to the project's DerivedData directory, or None if not found
+        Path to the project's DerivedData directory, or None if not found.
     """
-    # Normalize and get project name
     normalized_path = os.path.realpath(project_path)
     project_name = os.path.basename(normalized_path).replace('.xcworkspace', '').replace('.xcodeproj', '')
 
-    # Find DerivedData directory
     derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
 
     if not os.path.exists(derived_data_base):
         return None
 
-    # Look for directories matching the project name
-    # DerivedData directories typically have format: ProjectName-randomhash
     try:
-        for derived_dir in os.listdir(derived_data_base):
-            # More precise matching: must start with project name followed by a dash
-            if derived_dir.startswith(project_name + "-"):
-                derived_data_path = os.path.join(derived_data_base, derived_dir)
-                if os.path.isdir(derived_data_path):
-                    return derived_data_path
-    except Exception as e:
-        print(f"Error searching for DerivedData: {e}", file=sys.stderr)
+        entries = os.listdir(derived_data_base)
+    except OSError as e:
+        print(f"Error listing DerivedData base {derived_data_base}: {e}", file=sys.stderr)
+        return None
 
-    return None
+    candidates = []
+    for derived_dir in entries:
+        if not derived_dir.startswith(project_name + "-"):
+            continue
+        derived_data_path = os.path.join(derived_data_base, derived_dir)
+        if not os.path.isdir(derived_data_path):
+            continue
+
+        manifest_path = os.path.join(
+            derived_data_path, "Logs", "Build", "LogStoreManifest.plist"
+        )
+        try:
+            if os.path.exists(manifest_path):
+                mtime = os.path.getmtime(manifest_path)
+            else:
+                mtime = os.path.getmtime(derived_data_path)
+        except OSError:
+            mtime = 0.0
+        candidates.append((mtime, derived_data_path))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    return candidates[0][1]
