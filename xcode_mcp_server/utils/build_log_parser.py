@@ -69,7 +69,7 @@ def parse_manifest_plist(manifest_path: str) -> List[Dict]:
     Returns:
         List of build metadata dictionaries, sorted chronologically by
         timeStartedRecording. Each dict contains: uuid, fileName,
-        timeStartedRecording, title, errors, warnings, status.
+        timeStartedRecording, title, scheme_name, errors, warnings, status.
 
         Returns an empty list when the manifest file is missing (the
         first-build case).
@@ -102,11 +102,16 @@ def parse_manifest_plist(manifest_path: str) -> List[Dict]:
         if not isinstance(primary, dict):
             primary = {}
 
+        scheme_name = log_entry.get('schemeIdentifier-schemeName', '')
+        if not isinstance(scheme_name, str):
+            scheme_name = ''
+
         build_info = {
             'uuid': uuid,
             'fileName': log_entry.get('fileName', ''),
             'timeStartedRecording': log_entry.get('timeStartedRecording', 0),
             'title': log_entry.get('title', ''),
+            'scheme_name': scheme_name,
             'errors': primary.get('totalNumberOfErrors', 0),
             'warnings': primary.get('totalNumberOfWarnings', 0),
             'status': primary.get('highLevelStatus', 'U')  # S=Success, W=Warning, E=Error, U=Unknown
@@ -268,20 +273,29 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
     return [dict(w) for w in warnings], set(compiled_files)
 
 
-def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
+def aggregate_warnings_since_clean(
+    manifest_path: str,
+    logs_dir: str,
+    scheme_name: Optional[str] = None,
+) -> Dict:
     """
-    Aggregate warnings from all builds since the last clean operation.
+    Aggregate warnings from all Build actions since the last clean.
 
-    Strategy:
-    1. Parse manifest to find all builds
-    2. Find the most recent "Clean" operation
-    3. Parse all builds after the clean chronologically
-    4. Track which files were recompiled in later builds
-    5. Exclude warnings from files that were recompiled
+    Always restricts the analyzed manifest entries to those whose title
+    starts with "Build " — Test, Archive, Analyze, Profile, and IndexBuild
+    entries are excluded even when no scheme filter is supplied. Their
+    compile records would otherwise either drop legitimate Build warnings
+    (IndexBuild constantly recompiles files in the background) or leave
+    behind stale warnings for test-target-only files that Build never
+    recompiles.
 
     Args:
         manifest_path: Path to LogStoreManifest.plist
         logs_dir: Path to the Logs/Build directory containing .xcactivitylog files
+        scheme_name: When provided, additionally restrict both Clean
+            detection and Build analysis to entries whose
+            schemeIdentifier-schemeName matches. A Clean recorded for a
+            different scheme does not reset our scheme's history.
 
     Returns:
         Dictionary with:
@@ -311,23 +325,41 @@ def aggregate_warnings_since_clean(manifest_path: str, logs_dir: str) -> Dict:
             }
         }
 
-    # Find the most recent clean operation
+    def _matches_scheme(b: Dict) -> bool:
+        return scheme_name is None or b.get('scheme_name') == scheme_name
+
+    # Find the most recent Clean for our scheme (or any scheme when no filter).
+    # Use a prefix match instead of substring 'Clean' so a scheme whose name
+    # contains "Clean" (e.g. "CleanRoom") in a Build title isn't misread as
+    # a clean operation.
     last_clean_index = -1
     for i in range(len(builds) - 1, -1, -1):
-        if 'Clean' in builds[i]['title']:
+        if builds[i]['title'].startswith('Clean ') and _matches_scheme(builds[i]):
             last_clean_index = i
             break
 
-    # If no clean found, use all builds
     if last_clean_index == -1:
-        builds_to_analyze = builds
-        clean_info = 'No clean operation found - analyzing all builds'
+        builds_after_clean = builds
+        clean_info = (
+            f"No matching clean operation found (scheme: {scheme_name or 'any'}) - "
+            f"analyzing all matching builds"
+        )
     else:
-        # Use builds after the clean (not including the clean itself)
-        builds_to_analyze = builds[last_clean_index + 1:]
+        builds_after_clean = builds[last_clean_index + 1:]
         clean_info = f"Found clean at index {last_clean_index}: {builds[last_clean_index]['title']}"
 
-    print(f"Analyzing {len(builds_to_analyze)} builds since last clean", file=sys.stderr)
+    # Restrict to Build entries only (excludes Test/Archive/Analyze/Profile/
+    # IndexBuild), and additionally restrict by scheme when a filter is set.
+    builds_to_analyze = [
+        b for b in builds_after_clean
+        if b['title'].startswith('Build ') and _matches_scheme(b)
+    ]
+
+    print(
+        f"Analyzing {len(builds_to_analyze)} builds since last clean "
+        f"(scheme filter: {scheme_name or 'any'})",
+        file=sys.stderr,
+    )
 
     # Parse each build's xcactivitylog file
     all_warnings = []
@@ -469,28 +501,48 @@ def wait_for_new_build_uuid(
     unix_start_time: float,
     timeout_seconds: float = 10.0,
     poll_interval: float = 0.25,
+    settle_seconds: float = 1.0,
+    scheme_name: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Poll the manifest until a new build entry (not in before_uuids) appears
-    that started at or after unix_start_time.
+    Poll the manifest until a new Build entry appears, then wait for the
+    matching-entry set to stop growing for `settle_seconds` before returning.
 
-    The timestamp lower bound guards against the rare case where a user
-    triggers a build via the Xcode UI between our snapshot and our wait;
-    such an entry would not be in before_uuids but would have a
-    timeStartedRecording older than our start.
+    Returning on the *first* new entry races against Xcode in two ways:
+      1. A scheme that builds dependency modules can produce multiple Build
+         manifest entries for a single user-triggered build action. The
+         dependency entries finalize before the main target's; returning on
+         the first means aggregation runs before the main target's
+         xcactivitylog is in the manifest, and we read the previous main
+         target's stale log instead.
+      2. Xcode may finalize manifest writes in batches; a slightly slower
+         entry could be missed by an eager return.
 
-    Entries whose title indicates a non-build action (currently: "Clean ...")
-    are ignored, since the manifest records cleans alongside builds.
+    The settle period mitigates both: we wait until no new matching entry
+    has appeared for `settle_seconds`, then return the UUID with the
+    latest timeStartedRecording.
+
+    Filters applied to each candidate entry:
+      - uniqueIdentifier not in before_uuids (must be new since snapshot)
+      - title.startswith('Build ') (excludes Clean/Test/Archive/Analyze/IndexBuild)
+      - timeStartedRecording at or after our snapshot (rejects stray older entries)
+      - schemeIdentifier-schemeName matches scheme_name when provided
 
     Args:
         manifest_path: Path to LogStoreManifest.plist
         before_uuids: Set returned by snapshot_build_uuids() before the build started
         unix_start_time: time.time() captured before AppleScript was invoked
-        timeout_seconds: Maximum time to wait for the new entry
+        timeout_seconds: Maximum wall-clock time to wait
         poll_interval: Sleep between polls
+        settle_seconds: Required quiet period (no new matching entries) after
+            at least one matching entry has been seen. Set to 0 to disable
+            and return on first match.
+        scheme_name: When provided, restrict matches to entries whose
+            schemeIdentifier-schemeName equals this value.
 
     Returns:
-        The uniqueIdentifier of our build, or None on timeout.
+        The uniqueIdentifier of the matching entry with the latest
+        timeStartedRecording, or None on timeout.
     """
     # Filesystem mtimes and CFAbsoluteTime conversion both have sub-second
     # granularity — allow a small slack so a manifest entry written in the
@@ -499,8 +551,11 @@ def wait_for_new_build_uuid(
     effective_start_cf = unix_start_time - CF_EPOCH_OFFSET - timestamp_slack_seconds
 
     deadline = time.time() + timeout_seconds
+    last_seen_count = 0
+    last_change_time: Optional[float] = None
 
     while True:
+        matching: List[Tuple[float, str]] = []
         try:
             if os.path.exists(manifest_path):
                 with open(manifest_path, 'rb') as f:
@@ -509,26 +564,75 @@ def wait_for_new_build_uuid(
                 for log_uuid, entry in plist_data.get('logs', {}).items():
                     if log_uuid in before_uuids:
                         continue
+                    if not isinstance(entry, dict):
+                        continue
 
                     title = entry.get('title', '')
-                    # Build entries start with "Build " in Xcode's manifest;
-                    # Clean entries start with "Clean ". Skip anything that
-                    # doesn't look like a build action.
-                    if not title.startswith('Build'):
+                    if not title.startswith('Build '):
                         continue
+
+                    if scheme_name is not None:
+                        if entry.get('schemeIdentifier-schemeName') != scheme_name:
+                            continue
 
                     started = entry.get('timeStartedRecording', 0)
                     if not isinstance(started, (int, float)):
                         continue
+                    if started < effective_start_cf:
+                        continue
 
-                    if started >= effective_start_cf:
-                        return log_uuid
+                    matching.append((started, log_uuid))
         except Exception as e:
             print(f"Warning: error polling manifest {manifest_path}: {e}", file=sys.stderr)
+            matching = []
 
-        if time.time() >= deadline:
+        now = time.time()
+        current_count = len(matching)
+
+        if current_count != last_seen_count:
+            last_seen_count = current_count
+            last_change_time = now
+
+        # Settle: return latest match once at least one exists AND the
+        # matching set hasn't grown for settle_seconds.
+        if (
+            current_count > 0
+            and last_change_time is not None
+            and (now - last_change_time) >= settle_seconds
+        ):
+            matching.sort(key=lambda x: x[0], reverse=True)
+            return matching[0][1]
+
+        if now >= deadline:
             return None
         time.sleep(poll_interval)
+
+
+def get_scheme_name_for_uuid(manifest_path: str, target_uuid: str) -> Optional[str]:
+    """
+    Return the schemeIdentifier-schemeName for a single manifest entry, or
+    None if the entry isn't present or doesn't carry a usable scheme name.
+
+    Used by callers that have already identified "our" build's UUID via
+    wait_for_new_build_uuid and need its scheme name for downstream
+    aggregation filtering.
+    """
+    if not os.path.exists(manifest_path):
+        return None
+    try:
+        with open(manifest_path, 'rb') as f:
+            plist_data = plistlib.load(f)
+    except Exception as e:
+        print(f"Warning: failed to read manifest {manifest_path}: {e}", file=sys.stderr)
+        return None
+
+    entry = plist_data.get('logs', {}).get(target_uuid)
+    if not isinstance(entry, dict):
+        return None
+    scheme = entry.get('schemeIdentifier-schemeName')
+    if isinstance(scheme, str) and scheme:
+        return scheme
+    return None
 
 
 def find_derived_data_for_project(project_path: str) -> Optional[str]:

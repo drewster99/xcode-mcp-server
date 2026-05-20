@@ -27,12 +27,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from xcode_mcp_server.utils.build_log_parser import (
     CF_EPOCH_OFFSET,
+    get_scheme_name_for_uuid,
     snapshot_build_uuids,
     wait_for_new_build_uuid,
 )
 
 
-def _make_entry(title: str, time_started_cf: float, file_uuid: str = None) -> dict:
+def _make_entry(
+    title: str,
+    time_started_cf: float,
+    file_uuid: str = None,
+    scheme: str = 'TestScheme',
+) -> dict:
     """Build a single LogStoreManifest-style log entry."""
     if file_uuid is None:
         file_uuid = str(uuid.uuid4()).upper()
@@ -50,7 +56,7 @@ def _make_entry(title: str, time_started_cf: float, file_uuid: str = None) -> di
             'totalNumberOfWarnings': 0,
         },
         'schemeIdentifier-containerName': 'Test project',
-        'schemeIdentifier-schemeName': 'TestScheme',
+        'schemeIdentifier-schemeName': scheme,
         'schemeIdentifier-sharedScheme': 1,
         'signature': title,
         'timeStartedRecording': time_started_cf,
@@ -223,6 +229,156 @@ class WaitForNewBuildUUIDTests(unittest.TestCase):
 
             found = wait_for_new_build_uuid(manifest, before, start_unix, timeout_seconds=2.0)
             self.assertEqual(found, our_uuid)
+
+
+class SettleAndFilterTests(unittest.TestCase):
+    """
+    Regression tests for the settle behavior + scheme/action filtering in
+    wait_for_new_build_uuid. The earlier "return on first match" semantics
+    racked dependency-module builds and let cross-scheme entries trigger
+    a premature return; aggregation then read the previous main target's
+    stale xcactivitylog.
+    """
+
+    def test_returns_latest_matching_entry_when_multiple_new_entries_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, 'LogStoreManifest.plist')
+            existing_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build TestScheme', _now_cf() - 60, existing_uuid),
+            ])
+            before = snapshot_build_uuids(manifest)
+            start_unix = time.time()
+            earlier_uuid = str(uuid.uuid4()).upper()
+            later_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build TestScheme', _now_cf() - 60, existing_uuid),
+                _make_entry('Build TestScheme', _now_cf() + 0.1, earlier_uuid),
+                _make_entry('Build TestScheme', _now_cf() + 0.5, later_uuid),
+            ])
+
+            found = wait_for_new_build_uuid(
+                manifest, before, start_unix,
+                timeout_seconds=3.0, settle_seconds=0.5,
+            )
+            self.assertEqual(found, later_uuid)
+
+    def test_settle_waits_for_additional_entries(self):
+        """
+        A dependency module Build entry appears first, then the main target's
+        entry. Returning on the first match would pick the dep; the settle
+        period lets the main entry land before we return.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, 'LogStoreManifest.plist')
+            existing_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build TestScheme', _now_cf() - 60, existing_uuid),
+            ])
+            before = snapshot_build_uuids(manifest)
+            start_unix = time.time()
+
+            dep_uuid = str(uuid.uuid4()).upper()
+            main_uuid = str(uuid.uuid4()).upper()
+
+            def write_entries():
+                # Dep module finalizes first.
+                time.sleep(0.2)
+                _write_manifest(manifest, [
+                    _make_entry('Build TestScheme', _now_cf() - 60, existing_uuid),
+                    _make_entry('Build TestScheme', _now_cf(), dep_uuid),
+                ])
+                # Main target lands later — but still within the settle window
+                # after dep_uuid first appears.
+                time.sleep(0.6)
+                _write_manifest(manifest, [
+                    _make_entry('Build TestScheme', _now_cf() - 60, existing_uuid),
+                    _make_entry('Build TestScheme', _now_cf() - 0.6, dep_uuid),
+                    _make_entry('Build TestScheme', _now_cf(), main_uuid),
+                ])
+
+            t = threading.Thread(target=write_entries, daemon=True)
+            t.start()
+
+            found = wait_for_new_build_uuid(
+                manifest, before, start_unix,
+                timeout_seconds=5.0, settle_seconds=1.0,
+            )
+            t.join(timeout=2.0)
+            self.assertEqual(
+                found, main_uuid,
+                "must wait past the dep-module entry for the main target's entry",
+            )
+
+    def test_scheme_filter_excludes_other_schemes(self):
+        """A Build for a different scheme must not satisfy our wait."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, 'LogStoreManifest.plist')
+            existing_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build OtherScheme', _now_cf() - 60, existing_uuid, scheme='OtherScheme'),
+            ])
+            before = snapshot_build_uuids(manifest)
+            start_unix = time.time()
+            other_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build OtherScheme', _now_cf() - 60, existing_uuid, scheme='OtherScheme'),
+                _make_entry('Build OtherScheme', _now_cf() + 0.1, other_uuid, scheme='OtherScheme'),
+            ])
+
+            found = wait_for_new_build_uuid(
+                manifest, before, start_unix,
+                timeout_seconds=1.0, settle_seconds=0.2,
+                scheme_name='OurScheme',
+            )
+            self.assertIsNone(found, "entry for a different scheme must not match")
+
+    def test_scheme_filter_accepts_matching_scheme(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, 'LogStoreManifest.plist')
+            existing_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build OurScheme', _now_cf() - 60, existing_uuid, scheme='OurScheme'),
+            ])
+            before = snapshot_build_uuids(manifest)
+            start_unix = time.time()
+            wrong_uuid = str(uuid.uuid4()).upper()
+            ours_uuid = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build OurScheme', _now_cf() - 60, existing_uuid, scheme='OurScheme'),
+                _make_entry('Build OtherScheme', _now_cf() + 0.1, wrong_uuid, scheme='OtherScheme'),
+                _make_entry('Build OurScheme', _now_cf() + 0.2, ours_uuid, scheme='OurScheme'),
+            ])
+
+            found = wait_for_new_build_uuid(
+                manifest, before, start_unix,
+                timeout_seconds=2.0, settle_seconds=0.3,
+                scheme_name='OurScheme',
+            )
+            self.assertEqual(found, ours_uuid)
+
+
+class GetSchemeNameForUUIDTests(unittest.TestCase):
+    def test_returns_scheme_name_for_known_uuid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, 'LogStoreManifest.plist')
+            u = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build AppScheme', _now_cf(), u, scheme='AppScheme'),
+            ])
+            self.assertEqual(get_scheme_name_for_uuid(manifest, u), 'AppScheme')
+
+    def test_returns_none_for_unknown_uuid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, 'LogStoreManifest.plist')
+            u = str(uuid.uuid4()).upper()
+            _write_manifest(manifest, [
+                _make_entry('Build AppScheme', _now_cf(), u, scheme='AppScheme'),
+            ])
+            self.assertIsNone(get_scheme_name_for_uuid(manifest, 'NOT-A-REAL-UUID'))
+
+    def test_returns_none_for_missing_manifest(self):
+        self.assertIsNone(get_scheme_name_for_uuid('/no/such/file.plist', 'ANY'))
 
 
 if __name__ == '__main__':

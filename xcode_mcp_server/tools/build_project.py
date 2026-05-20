@@ -27,6 +27,7 @@ from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
 from xcode_mcp_server.utils.build_log_parser import (
     find_derived_data_for_project,
     aggregate_warnings_since_clean,
+    get_scheme_name_for_uuid,
     snapshot_build_uuids,
     wait_for_new_build_uuid,
 )
@@ -45,6 +46,7 @@ def _supplement_with_xcactivitylog_warnings(
     max_lines: int,
     pre_build_uuids: Optional[set] = None,
     unix_start_time: Optional[float] = None,
+    scheme_name: Optional[str] = None,
 ) -> str:
     """
     Supplement build results with comprehensive warnings from xcactivitylog files.
@@ -59,6 +61,12 @@ def _supplement_with_xcactivitylog_warnings(
     pre_build_uuids and unix_start_time are used to wait for this build's
     manifest entry to be written before reading. Without them, aggregation can
     race against Xcode and return stale warnings from a previous build.
+
+    scheme_name (when known) is passed through to wait_for_new_build_uuid so we
+    only wait for entries matching our scheme, and to aggregate_warnings_since_clean
+    so cross-scheme entries in the same DerivedData don't contaminate the result.
+    If scheme_name is None (user wanted the active scheme), we look it up from the
+    matched manifest entry after wait succeeds.
     """
     from xcode_mcp_server.utils.xcresult import BUILD_WARNINGS_FORCED, BUILD_WARNINGS_ENABLED
 
@@ -87,12 +95,14 @@ def _supplement_with_xcactivitylog_warnings(
         # timeout — degraded but not broken. The aggregation_status flag
         # captures the degradation so we can surface it in the JSON response.
         aggregation_status: Optional[dict] = None
+        our_uuid: Optional[str] = None
         if pre_build_uuids is not None and unix_start_time is not None:
             our_uuid = wait_for_new_build_uuid(
                 manifest_path,
                 pre_build_uuids,
                 unix_start_time,
                 timeout_seconds=MANIFEST_ENTRY_WAIT_SECONDS,
+                scheme_name=scheme_name,
             )
             if our_uuid is None:
                 print(
@@ -109,7 +119,18 @@ def _supplement_with_xcactivitylog_warnings(
                     ),
                 }
 
-        xcactivity_result = aggregate_warnings_since_clean(manifest_path, logs_dir)
+        # Use the user-provided scheme for aggregation filtering when known;
+        # otherwise read the scheme name out of the matched manifest entry.
+        # When neither is available (e.g. wait timed out and scheme was not
+        # passed), pass None and aggregate without a scheme filter — the
+        # action-prefix filter still excludes non-Build entries.
+        aggregation_scheme = scheme_name
+        if aggregation_scheme is None and our_uuid is not None:
+            aggregation_scheme = get_scheme_name_for_uuid(manifest_path, our_uuid)
+
+        xcactivity_result = aggregate_warnings_since_clean(
+            manifest_path, logs_dir, scheme_name=aggregation_scheme,
+        )
         if xcactivity_result.get('summary', {}).get('manifest_unreadable'):
             aggregation_status = {
                 'status': 'unavailable',
@@ -365,6 +386,7 @@ def build_project(project_path: str,
         errors_output = _supplement_with_xcactivitylog_warnings(
             errors_output, normalized_path, include_warnings, regex_filter, max_lines,
             pre_build_uuids=pre_build_uuids, unix_start_time=unix_start_time,
+            scheme_name=scheme,
         )
 
         # Parse JSON to show appropriate notification
