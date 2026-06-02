@@ -30,7 +30,7 @@ The AI can perform complete development workflows - from finding a project, to b
 
 - **macOS** - This server only works on macOS
 - **Xcode** - Xcode must be installed
-- **Python 3.8+** - For running the server
+- **Python 3.10+** - For running the server (uvx will fetch a compatible Python automatically if your system Python is older)
 
 ## Security
 
