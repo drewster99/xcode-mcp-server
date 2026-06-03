@@ -5,7 +5,7 @@ import os
 import json
 import sys
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.utils.applescript import (
@@ -18,7 +18,7 @@ from xcode_mcp_server.utils.applescript import (
 from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_results_from_xcresult
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def get_latest_test_results(project_path: str) -> str:
     """

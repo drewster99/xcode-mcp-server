@@ -7,7 +7,7 @@ import time
 import json
 from typing import Optional, List
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError
@@ -149,7 +149,7 @@ from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_r
 #         return f"⏳ Tests did not complete within {max_wait_seconds} seconds"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_BUILD)
 @apply_config
 def run_project_tests(project_path: str,
                      scheme: Optional[str] = None) -> str:

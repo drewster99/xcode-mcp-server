@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """get_project_schemes tool - Get available build schemes"""
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -14,7 +14,7 @@ from xcode_mcp_server.utils.applescript import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def get_project_schemes(project_path: str) -> str:
     """

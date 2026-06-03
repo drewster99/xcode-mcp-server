@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -162,7 +162,7 @@ def _lookup_simulator_info(udid: str) -> tuple:
     return ("", "")
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def get_active_run_destination(
     project_path: str,

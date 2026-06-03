@@ -5,7 +5,7 @@ import json
 import os
 from typing import Optional
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_CREATE
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_parent_for_new_project
 from xcode_mcp_server.exceptions import InvalidParameterError
@@ -23,7 +23,7 @@ from xcode_mcp_server.tools.get_xcode_projects import register_created_project
 SUPPORTED_PLATFORMS = {"ios", "macos"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_CREATE)
 @apply_config
 def create_project(
     parent_directory: str,

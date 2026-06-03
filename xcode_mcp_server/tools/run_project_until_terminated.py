@@ -7,7 +7,7 @@ import time
 import datetime
 from typing import Optional
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -27,7 +27,7 @@ from xcode_mcp_server.utils.xcresult import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_BUILD)
 @apply_config
 def run_project_until_terminated(project_path: str,
                                   scheme: Optional[str] = None,

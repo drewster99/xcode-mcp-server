@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.utils.applescript import get_notification_history
 from xcode_mcp_server.utils.paths import DEBUG_DIR
@@ -16,7 +16,7 @@ from xcode_mcp_server.utils.paths import DEBUG_DIR
 NOTIFICATION_HISTORY_FILE = os.path.join(DEBUG_DIR, "notification-history.txt")
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def debug_list_notification_history() -> str:
     """

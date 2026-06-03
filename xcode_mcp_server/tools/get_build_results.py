@@ -5,7 +5,7 @@ import os
 import json
 from typing import Optional
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -15,7 +15,7 @@ from xcode_mcp_server.utils.build_log_parser import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def get_build_results(project_path: str,
                      max_warnings: int = 50) -> str:

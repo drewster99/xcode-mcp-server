@@ -3,7 +3,7 @@
 
 import os
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_CLEAN
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -17,7 +17,7 @@ from xcode_mcp_server.utils.applescript import (
 )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_CLEAN)
 @apply_config
 def clean_project(project_path: str) -> str:
     """

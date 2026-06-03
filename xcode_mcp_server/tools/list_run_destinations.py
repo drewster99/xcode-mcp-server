@@ -8,7 +8,7 @@ import subprocess
 import sys
 from typing import Optional
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -73,7 +73,7 @@ def _parse_destination_line(line: str) -> Optional[dict]:
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def list_run_destinations(
     project_path: str,

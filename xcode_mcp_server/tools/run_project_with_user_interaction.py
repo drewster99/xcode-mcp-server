@@ -7,7 +7,7 @@ import time
 import datetime
 from typing import Optional
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
@@ -36,7 +36,7 @@ MAX_INTERACTIVE_RUN_SECONDS = 3600
 LAUNCH_SETTLE_TIMEOUT = 10
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_BUILD)
 @apply_config
 def run_project_with_user_interaction(project_path: str,
                                        scheme: Optional[str] = None,

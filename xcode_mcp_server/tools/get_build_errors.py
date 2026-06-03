@@ -3,7 +3,7 @@
 
 from typing import Optional
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
@@ -11,7 +11,7 @@ from xcode_mcp_server.utils.applescript import escape_applescript_string, run_ap
 from xcode_mcp_server.utils.xcresult import extract_build_errors_and_warnings
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def get_build_errors(project_path: str,
                     include_warnings: Optional[bool] = None,

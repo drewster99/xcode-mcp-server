@@ -4,7 +4,7 @@
 import os
 from typing import List
 
-from xcode_mcp_server.server import mcp
+from xcode_mcp_server.server import mcp, TOOL_READONLY
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_directory_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
@@ -32,7 +32,7 @@ SKIP_DIR_NAMES = frozenset([
 MAX_TREE_LINES = 5000
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_READONLY)
 @apply_config
 def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     """
