@@ -21,7 +21,21 @@ def set_allowed_folders(folders: Set[str]):
     correct comparisons.
     """
     global ALLOWED_FOLDERS
-    ALLOWED_FOLDERS = {os.path.realpath(f).rstrip("/") for f in folders if f}
+    resolved = set()
+    for f in folders:
+        if not f:
+            continue
+        real = os.path.realpath(f)
+        # `realpath("/").rstrip("/")` is "", and an empty allowed entry makes the
+        # `startswith(entry + "/")` test in is_path_allowed match every absolute
+        # path — i.e. a silent allow-everything. Root isn't a permitted allowed
+        # folder (get_allowed_folders drops it too), so skip it here rather than
+        # store a value that defeats the allow-list.
+        if real == "/":
+            print("Warning: refusing to use '/' as an allowed folder", file=sys.stderr)
+            continue
+        resolved.add(real.rstrip("/"))
+    ALLOWED_FOLDERS = resolved
 
 
 def get_allowed_folders(command_line_folders: Optional[List[str]] = None) -> Set[str]:
@@ -120,6 +134,10 @@ def is_path_allowed(project_path: str) -> bool:
     resolved = os.path.realpath(project_path).rstrip("/")
 
     for allowed_folder in ALLOWED_FOLDERS:
+        # Defensively ignore an empty entry; matching against "" + "/" would
+        # accept every absolute path. set_allowed_folders should never store one.
+        if not allowed_folder:
+            continue
         if resolved == allowed_folder:
             return True
         if resolved.startswith(allowed_folder + "/"):

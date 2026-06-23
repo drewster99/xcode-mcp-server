@@ -13,6 +13,7 @@ from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
+    build_action_completed_check_applescript,
     escape_applescript_string,
     run_applescript,
     show_notification,
@@ -78,7 +79,11 @@ def run_project_with_user_interaction(project_path: str,
     script = (
         build_open_and_wait_applescript(escaped_path, escaped_scheme)
         + '    set actionResult to run workspaceDoc\n'
-        + '    return "launched"\n'
+        + '    set actionId to ""\n'
+        + '    try\n'
+        + '        set actionId to (id of actionResult) as string\n'
+        + '    end try\n'
+        + '    return "launched:" & actionId\n'
         + 'end tell\n'
     )
 
@@ -97,9 +102,17 @@ def run_project_with_user_interaction(project_path: str,
         show_error_notification("Failed to launch app", project_name)
         raise XCodeMCPError(f"Launch failed: {output}")
 
-    print(f"App launched, waiting for it to settle (up to {LAUNCH_SETTLE_TIMEOUT}s)...", file=sys.stderr)
+    # Capture this run's action id so every poll below checks THIS action rather
+    # than the workspace-global `last scheme action result`, which a concurrent
+    # build/run/test on the same workspace could repoint mid-run.
+    action_id = ""
+    if output.strip().startswith("launched:"):
+        action_id = output.strip()[len("launched:"):].strip()
 
-    check_script = f'''
+    # Last-action check, used as a fallback whenever the action-id check isn't
+    # usable. This is the original behavior (subject to the cross-action race),
+    # so falling back never does worse than before the id pinning was added.
+    fallback_check_script = f'''
     set projectPath to "{escaped_path}"
 
     tell application "Xcode"
@@ -108,6 +121,23 @@ def run_project_with_user_interaction(project_path: str,
         return completed of lastAction as string
     end tell
     '''
+
+    if action_id:
+        escaped_action_id = escape_applescript_string(action_id)
+        check_script = build_action_completed_check_applescript(escaped_path, escaped_action_id)
+        # Probe once: the action we just started must be present in the
+        # workspace's action results. If it isn't, id matching isn't usable on
+        # this Xcode (the property is inconsistent), and every poll would read
+        # "notfound" and miss natural termination — so fall back to last-action.
+        probe_ok, probe = run_applescript(check_script)
+        if probe_ok and probe.strip().lower() == "notfound":
+            print("Warning: run action id not found in workspace results; falling back to last-action check", file=sys.stderr)
+            check_script = fallback_check_script
+    else:
+        print("Warning: could not capture run action id; falling back to last-action check", file=sys.stderr)
+        check_script = fallback_check_script
+
+    print(f"App launched, waiting for it to settle (up to {LAUNCH_SETTLE_TIMEOUT}s)...", file=sys.stderr)
 
     # Brief settle window: poll the action's `completed` flag. If the app
     # crashes or exits during this window, we skip the alert entirely. If it's
@@ -201,17 +231,8 @@ def run_project_with_user_interaction(project_path: str,
         '''
         run_applescript(stop_script)
 
-        # Wait and verify it stopped
+        # Wait and verify it stopped, reusing the same action-pinned check.
         for _ in range(10):  # Wait up to 20 seconds
-            check_script = f'''
-            set projectPath to "{escaped_path}"
-
-            tell application "Xcode"
-                set workspaceDoc to first workspace document whose path is projectPath
-                set lastAction to last scheme action result of workspaceDoc
-                return completed of lastAction as string
-            end tell
-            '''
             success, completed_str = run_applescript(check_script)
             if success and completed_str.strip().lower() == "true":
                 print(f"App stopped successfully", file=sys.stderr)

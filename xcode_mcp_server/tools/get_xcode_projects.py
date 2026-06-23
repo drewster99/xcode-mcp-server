@@ -92,12 +92,19 @@ def _filter_project_results(paths: list[str], search_paths: list[str] = None, ma
             print(f"Warning: Invalid regex pattern '{regex_filter}': {e}", file=sys.stderr)
 
     for path in paths:
+        # Filter 0: Enforce the allow-list on every path. mdfind results are
+        # already constrained by `-onlyin`, but recents come from Xcode's global
+        # recents list and could otherwise point outside the configured folders.
+        if not is_path_allowed(path):
+            continue
+
         # Filter 1: Skip Pods.xcodeproj
         if os.path.basename(path) == "Pods.xcodeproj":
             continue
 
-        # Filter 2: Skip anything under $HOME/Library
-        if path.startswith(home_library):
+        # Filter 2: Skip anything under $HOME/Library. Match on a path-component
+        # boundary so a sibling like "~/LibraryNotes" isn't swept up.
+        if path == home_library or path.startswith(home_library + os.sep):
             continue
 
         # Filter 3: Skip if any parent directory ends with .playground
@@ -124,7 +131,9 @@ def _filter_project_results(paths: list[str], search_paths: list[str] = None, ma
 
             for search_path in search_paths:
                 abs_search = os.path.realpath(search_path)
-                if abs_path.startswith(abs_search):
+                # Compare on a path-component boundary so "/a/App" doesn't match
+                # a sibling "/a/App-Other".
+                if abs_path == abs_search or abs_path.startswith(abs_search + os.sep):
                     # Calculate depth from this search path
                     # Depth 0 = directly in search path, depth 1 = one level down, etc.
                     rel_path = abs_path[len(abs_search):].lstrip('/')

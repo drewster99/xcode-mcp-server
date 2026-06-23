@@ -156,6 +156,34 @@ def build_wait_for_completion_applescript(
     )
 
 
+def build_action_completed_check_applescript(escaped_path: str, escaped_action_id: str) -> str:
+    """
+    Return AppleScript that reports whether a specific scheme action result has
+    completed.
+
+    The result is matched by `id` rather than read from the workspace-global
+    `last scheme action result`, so a concurrent build/run/test on the same
+    workspace can't make the check observe the wrong action. Output is the
+    string "true"/"false" for the matched action, or "notfound" when no action
+    result with that id exists on the workspace document.
+
+    Args:
+        escaped_path: Project path, already escaped.
+        escaped_action_id: The action result's id, already escaped.
+    """
+    return (
+        f'set projectPath to "{escaped_path}"\n'
+        f'set targetId to "{escaped_action_id}"\n'
+        f'tell application "Xcode"\n'
+        f'    set workspaceDoc to first workspace document whose path is projectPath\n'
+        f'    repeat with r in scheme action results of workspaceDoc\n'
+        f'        if ((id of r) as string) is targetId then return (completed of r) as string\n'
+        f'    end repeat\n'
+        f'    return "notfound"\n'
+        f'end tell\n'
+    )
+
+
 def resolve_build_timeout(timeout: Optional[int]) -> int:
     """Resolve the effective build/test timeout in seconds for a tool call.
 

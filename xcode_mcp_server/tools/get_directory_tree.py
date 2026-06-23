@@ -31,6 +31,10 @@ SKIP_DIR_NAMES = frozenset([
 # response can't blow up token usage on pathological repos.
 MAX_TREE_LINES = 5000
 
+# Hard ceiling on recursion depth. A caller-supplied max_depth is clamped to
+# this so an extreme value can't walk an enormous tree before truncation.
+MAX_TREE_DEPTH = 32
+
 
 @mcp.tool(annotations=TOOL_READONLY)
 @apply_config
@@ -66,6 +70,9 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     # Validate max_depth
     if max_depth < 1:
         raise InvalidParameterError("max_depth must be at least 1")
+    # Clamp so a huge value can't drive an enormous filesystem walk before the
+    # output-line truncation below would ever kick in.
+    max_depth = min(max_depth, MAX_TREE_DEPTH)
 
     directory_path = validate_and_normalize_directory_path(directory_path)
 
@@ -82,9 +89,18 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
         show_error_notification(error_msg)
         raise InvalidParameterError(f"Path is not a directory: {scan_dir}")
 
+    # Running count of emitted lines (header included) so traversal can stop as
+    # soon as the output budget is reached, rather than walking the whole tree
+    # and truncating afterward.
+    emitted = 1
+    # Set when traversal stops short because the line budget was hit, so the
+    # truncation can be reported rather than silently capping the output.
+    overflowed = False
+
     # Build the hierarchy (directories only)
     def build_hierarchy(path: str, prefix: str = "", is_last: bool = True, base_path: str = "", current_depth: int = 0) -> List[str]:
         """Recursively build a visual hierarchy of directories only"""
+        nonlocal emitted, overflowed
         lines = []
 
         if not base_path:
@@ -95,12 +111,16 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
             connector = "└── " if is_last else "├── "
             name = os.path.basename(path) + "/"
             lines.append(prefix + connector + name)
+            emitted += 1
 
             # Update prefix for children
             extension = "    " if is_last else "│   "
             prefix = prefix + extension
 
-        # Check if we've reached max depth
+        # Check if we've reached the output-line budget or max depth
+        if emitted >= MAX_TREE_LINES:
+            overflowed = True
+            return lines
         if current_depth >= max_depth:
             return lines
 
@@ -126,6 +146,9 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
                             dir_items.append(item)
 
                 for i, item in enumerate(dir_items):
+                    if emitted >= MAX_TREE_LINES:
+                        overflowed = True
+                        break
                     item_path = os.path.join(path, item)
                     is_last_item = (i == len(dir_items) - 1)
                     lines.extend(build_hierarchy(item_path, prefix, is_last_item, base_path, current_depth + 1))
@@ -148,6 +171,9 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
                     dir_items.append(item)
 
         for i, item in enumerate(dir_items):
+            if emitted >= MAX_TREE_LINES:
+                overflowed = True
+                break
             item_path = os.path.join(scan_dir, item)
             is_last_item = (i == len(dir_items) - 1)
             hierarchy_lines.extend(build_hierarchy(item_path, "", is_last_item, scan_dir, 1))
@@ -161,6 +187,11 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
         hierarchy_lines = hierarchy_lines[:MAX_TREE_LINES]
         truncation_note = (
             f"\n\n[Truncated: showing {MAX_TREE_LINES} of {original} lines. "
+            f"Lower max_depth or call get_directory_listing on a subdirectory.]"
+        )
+    elif overflowed:
+        truncation_note = (
+            f"\n\n[Truncated at {MAX_TREE_LINES} lines; the tree has more entries. "
             f"Lower max_depth or call get_directory_listing on a subdirectory.]"
         )
 

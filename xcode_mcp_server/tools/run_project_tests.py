@@ -23,7 +23,7 @@ from xcode_mcp_server.utils.applescript import (
     show_error_notification,
     show_warning_notification,
 )
-from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_results_from_xcresult
+from xcode_mcp_server.utils.xcresult import wait_for_xcresult_after_timestamp, extract_test_results_from_xcresult
 
 
 # TODO (follow-up): Implement selective test execution with xcodebuild.
@@ -289,6 +289,10 @@ def run_project_tests(project_path: str,
         + 'end tell\n'
     )
 
+    # Capture start time before launching so we only accept a .xcresult written
+    # by THIS test run, not a stale bundle from a previous run.
+    test_start_time = time.time()
+
     # The script polls inside AppleScript for up to effective_timeout; the
     # subprocess timeout must exceed that, plus buffer for workspace load.
     success, output = run_applescript(script, timeout=effective_timeout + 60)
@@ -322,10 +326,12 @@ def run_project_tests(project_path: str,
         show_warning_notification(f"Tests timeout ({duration})")
         return '\n'.join(output_lines)
 
-    # If tests completed, get detailed results from xcresult
-    # Wait a moment for xcresult to be written
-    time.sleep(2)
-    xcresult_path = find_xcresult_bundle(project_path)
+    # If tests completed, get detailed results from xcresult. Gate on the start
+    # timestamp so a not-yet-finalized bundle doesn't cause us to return the
+    # previous test run's results.
+    xcresult_path = wait_for_xcresult_after_timestamp(
+        project_path, test_start_time, timeout_seconds=10, logs_subdir="Test"
+    )
 
     if xcresult_path:
         print(f"DEBUG: Found xcresult bundle at {xcresult_path}", file=sys.stderr)

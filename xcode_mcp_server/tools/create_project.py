@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 from typing import Optional
 
 from xcode_mcp_server.server import mcp, TOOL_CREATE
@@ -21,6 +22,14 @@ from xcode_mcp_server.tools.get_xcode_projects import register_created_project
 
 
 SUPPORTED_PLATFORMS = {"ios", "macos"}
+
+# bundle_identifier and deployment_target are interpolated unquoted into
+# project.pbxproj (PRODUCT_BUNDLE_IDENTIFIER / *_DEPLOYMENT_TARGET). Without
+# validation a value containing ';', '{', whitespace, quotes, or newlines could
+# inject or corrupt build settings. Restrict to the characters Apple actually
+# allows so the generated pbxproj can't be broken out of.
+_BUNDLE_IDENTIFIER_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.\-]*$')
+_DEPLOYMENT_TARGET_RE = re.compile(r'^\d+(\.\d+)*$')
 
 
 @mcp.tool(annotations=TOOL_CREATE)
@@ -61,6 +70,21 @@ def create_project(
         raise InvalidParameterError(
             f"platform must be one of: {', '.join(sorted(SUPPORTED_PLATFORMS))}. "
             f"Got: '{platform}'"
+        )
+
+    # Validate optional template fields before they reach the pbxproj template.
+    # Coerce None→"" defensively in case a client omits/nulls these.
+    bundle_identifier = (bundle_identifier or "").strip()
+    if bundle_identifier and not _BUNDLE_IDENTIFIER_RE.match(bundle_identifier):
+        raise InvalidParameterError(
+            "bundle_identifier may contain only letters, digits, hyphens, and "
+            "dots, and must start with a letter or digit (e.g. 'com.example.MyApp')"
+        )
+
+    deployment_target = (deployment_target or "").strip()
+    if deployment_target and not _DEPLOYMENT_TARGET_RE.match(deployment_target):
+        raise InvalidParameterError(
+            "deployment_target must be a version number such as '17.0' or '26.0'"
         )
 
     # Validate parent directory and project name

@@ -69,85 +69,64 @@ def run_project_until_terminated(project_path: str,
     scheme_name = scheme if scheme else "active scheme"
     show_notification("Drew's Xcode MCP", subtitle=scheme_name, message=f"Running {project_name}")
 
+    # The poll loop runs entirely inside AppleScript against the `actionResult`
+    # reference returned by `run workspaceDoc`. This pins the wait to the action
+    # this tool started — reading the workspace-global `last scheme action
+    # result` (the prior approach) could observe a concurrent build/run/test on
+    # the same workspace and report the wrong action's status. It also replaces
+    # one osascript spawn every 2s with a single subprocess for the whole run.
     escaped_scheme = escape_applescript_string(scheme) if scheme else None
     script = (
         build_open_and_wait_applescript(escaped_path, escaped_scheme)
         + '    set actionResult to run workspaceDoc\n'
-        + '    return "launched"\n'
+        + '    set runWaitTime to 0\n'
+        + '    set didTimeout to false\n'
+        + '    repeat\n'
+        + '        if completed of actionResult is true then exit repeat\n'
+        + f'        if runWaitTime >= {effective_timeout} then\n'
+        + '            set didTimeout to true\n'
+        + '            exit repeat\n'
+        + '        end if\n'
+        + '        delay 1.0\n'
+        + '        set runWaitTime to runWaitTime + 1.0\n'
+        + '    end repeat\n'
+        + '    if didTimeout then\n'
+        + '        stop workspaceDoc\n'
+        + '        set stopWait to 0\n'
+        + '        repeat\n'
+        + '            if completed of actionResult is true then exit repeat\n'
+        + '            if stopWait >= 20 then exit repeat\n'
+        + '            delay 1.0\n'
+        + '            set stopWait to stopWait + 1.0\n'
+        + '        end repeat\n'
+        + '        return "timeout"\n'
+        + '    end if\n'
+        + '    return "terminated"\n'
         + 'end tell\n'
     )
 
-    print(f"Launching app...", file=sys.stderr)
+    print(f"Launching app and waiting for termination (up to {format_timeout_duration(effective_timeout)})...", file=sys.stderr)
 
     # Capture start time BEFORE running the script
     start_time = time.time()
     start_datetime = datetime.datetime.fromtimestamp(start_time)
     print(f"Run start time: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}", file=sys.stderr)
 
-    success, output = run_applescript(script)
+    # The script polls inside AppleScript for up to effective_timeout (plus up
+    # to 20s verifying a forced stop); the subprocess timeout must exceed that,
+    # with a buffer for workspace load and IPC overhead.
+    success, output = run_applescript(script, timeout=effective_timeout + 60)
 
     if not success:
         show_error_notification("Failed to launch app", project_name)
         raise XCodeMCPError(f"Launch failed: {output}")
 
-    print(f"App launched, polling for termination (up to {format_timeout_duration(effective_timeout)})...", file=sys.stderr)
-
-    elapsed = 0
-    app_terminated = False
-
-    while elapsed < effective_timeout:
-        # Check if app terminated
-        check_script = f'''
-        set projectPath to "{escaped_path}"
-
-        tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is projectPath
-            set lastAction to last scheme action result of workspaceDoc
-            return completed of lastAction as string
-        end tell
-        '''
-
-        success, completed_str = run_applescript(check_script)
-        if success and completed_str.strip().lower() == "true":
-            print(f"App terminated naturally after {elapsed} seconds", file=sys.stderr)
-            app_terminated = True
-            break
-
-        time.sleep(2)
-        elapsed += 2
-
-    # If still running after timeout, force-stop
-    if not app_terminated:
+    if output.strip() == "timeout":
         duration = format_timeout_duration(effective_timeout)
-        print(f"App did not terminate within {duration}, force-stopping...", file=sys.stderr)
-        show_warning_notification(f"App timeout ({duration})", "Force-stopping app")
-
-        stop_script = f'''
-        set projectPath to "{escaped_path}"
-
-        tell application "Xcode"
-            set workspaceDoc to first workspace document whose path is projectPath
-            stop workspaceDoc
-        end tell
-        '''
-        run_applescript(stop_script)
-
-        # Wait and verify it stopped (up to 20 seconds)
-        for _ in range(10):
-            check_script = f'''
-            set projectPath to "{escaped_path}"
-
-            tell application "Xcode"
-                set workspaceDoc to first workspace document whose path is projectPath
-                set lastAction to last scheme action result of workspaceDoc
-                return completed of lastAction as string
-            end tell
-            '''
-            success, completed_str = run_applescript(check_script)
-            if success and completed_str.strip().lower() == "true":
-                print(f"App stopped successfully", file=sys.stderr)
-                break
-            time.sleep(2)
+        print(f"App did not terminate within {duration}; force-stopped.", file=sys.stderr)
+        show_warning_notification(f"App timeout ({duration})", "Force-stopped app")
+    else:
+        print(f"App terminated naturally.", file=sys.stderr)
 
     # Wait for xcresult to finalize
     print(f"Waiting for runtime logs to become available...", file=sys.stderr)

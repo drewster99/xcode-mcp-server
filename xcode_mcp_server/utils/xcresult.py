@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 
 from xcode_mcp_server.exceptions import InvalidParameterError
 from xcode_mcp_server.utils.paths import LOG_DIR
+from xcode_mcp_server.utils.build_log_parser import select_derived_data_dirs_for_project
 
 # Global build warning settings - initialized by CLI.
 # These are set once during startup and then read by every concurrent build
@@ -541,13 +542,17 @@ def extract_build_errors_and_warnings(build_log: str,
 
 def _find_most_recent_xcresult(project_path: str, logs_subdir: str) -> Optional[str]:
     """
-    Find the globally most-recent .xcresult file across every DerivedData
-    directory whose name starts with the project name.
+    Find the globally most-recent .xcresult file across the DerivedData
+    directories that belong to this project.
 
     Xcode regenerates the random-hash suffix when a project moves or its Xcode
     version changes, so multiple matching DerivedData directories can coexist.
-    Iterating and returning on the first match (the prior behavior) is
-    non-deterministic — `os.listdir` order is filesystem-defined.
+    Directory names are `{ProjectName}-{hash}`, so a different project sharing
+    the same name also matches the prefix; candidates are disambiguated by
+    info.plist's WorkspacePath before any .xcresult is considered, so logs from
+    an unrelated same-named project can't leak in. Iterating and returning on
+    the first match (the prior behavior) is non-deterministic — `os.listdir`
+    order is filesystem-defined.
 
     Args:
         project_path: Path to .xcodeproj or .xcworkspace
@@ -576,11 +581,19 @@ def _find_most_recent_xcresult(project_path: str, logs_subdir: str) -> Optional[
         )
         return None
 
+    dir_candidates = [
+        (0.0, os.path.join(derived_data_base, d))
+        for d in entries
+        if d.startswith(project_name + "-")
+        and os.path.isdir(os.path.join(derived_data_base, d))
+    ]
+    if not dir_candidates:
+        return None
+    matching_dirs = select_derived_data_dirs_for_project(dir_candidates, normalized_path)
+
     candidates = []
-    for derived_dir in entries:
-        if not derived_dir.startswith(project_name + "-"):
-            continue
-        logs_dir = os.path.join(derived_data_base, derived_dir, "Logs", logs_subdir)
+    for _key, derived_data_path in matching_dirs:
+        logs_dir = os.path.join(derived_data_path, "Logs", logs_subdir)
         if not os.path.isdir(logs_dir):
             continue
         try:
@@ -615,7 +628,7 @@ def find_xcresult_for_project(project_path: str) -> Optional[str]:
     return _find_most_recent_xcresult(project_path, logs_subdir="Launch")
 
 
-def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int) -> Optional[str]:
+def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int, logs_subdir: str = "Launch") -> Optional[str]:
     """
     Wait for an xcresult file that was created AND modified at or after the given timestamp.
 
@@ -627,6 +640,8 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
         project_path: Path to the .xcodeproj or .xcworkspace
         start_timestamp: Unix timestamp (from time.time()) when the operation started
         timeout_seconds: Maximum seconds to wait for a valid xcresult file
+        logs_subdir: DerivedData logs subdirectory to search — "Launch" for
+            runtime-run results (default) or "Test" for test results.
 
     Returns:
         Path to the xcresult file if found, or None if timeout expires or no valid file found
@@ -644,7 +659,7 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
     end_time = time.time() + timeout_seconds
 
     while time.time() < end_time:
-        xcresult_path = find_xcresult_for_project(project_path)
+        xcresult_path = _find_most_recent_xcresult(project_path, logs_subdir=logs_subdir)
 
         if xcresult_path and os.path.exists(xcresult_path):
             mod_time = os.path.getmtime(xcresult_path)

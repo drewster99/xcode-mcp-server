@@ -635,13 +635,84 @@ def get_scheme_name_for_uuid(manifest_path: str, target_uuid: str) -> Optional[s
     return None
 
 
+def derived_data_matches_project(derived_data_path: str, project_realpath: str) -> Optional[bool]:
+    """
+    Decide whether a DerivedData directory belongs to a specific project.
+
+    DerivedData directory names are `{ProjectName}-{hash}`, so two distinct
+    projects that share a name (in different directories) both match the same
+    name prefix. Each DerivedData directory records the real project it was
+    built from in `info.plist` under `WorkspacePath`; comparing that against the
+    project path disambiguates them.
+
+    Args:
+        derived_data_path: Absolute path to a `{ProjectName}-{hash}` directory.
+        project_realpath: `os.path.realpath` of the .xcodeproj/.xcworkspace.
+
+    Returns:
+        True if info.plist's WorkspacePath identifies this project, False if it
+        identifies a different one, or None if info.plist is missing/unreadable
+        (so callers can fall back to name-prefix matching instead of discarding
+        the candidate).
+    """
+    info_plist = os.path.join(derived_data_path, "info.plist")
+    if not os.path.exists(info_plist):
+        return None
+    try:
+        with open(info_plist, 'rb') as f:
+            info = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException) as e:
+        print(f"Warning: failed to read {info_plist}: {e}", file=sys.stderr)
+        return None
+
+    workspace_path = info.get('WorkspacePath')
+    if not isinstance(workspace_path, str) or not workspace_path:
+        return None
+
+    wp = os.path.realpath(workspace_path)
+    if wp == project_realpath:
+        return True
+    # A bare .xcodeproj is backed by an implicit workspace at
+    # <proj>.xcodeproj/project.xcworkspace, so accept a containment match in
+    # either direction rather than requiring an exact string equal.
+    if wp.startswith(project_realpath + os.sep) or project_realpath.startswith(wp + os.sep):
+        return True
+    return False
+
+
+def select_derived_data_dirs_for_project(
+    derived_dirs: List[Tuple[float, str]], project_realpath: str
+) -> List[Tuple[float, str]]:
+    """
+    Filter name-prefix DerivedData candidates down to those that info.plist
+    confirms belong to `project_realpath`.
+
+    If at least one candidate is positively confirmed, only confirmed ones are
+    returned (excluding any that info.plist proves belong to a different
+    same-named project). If none can be confirmed (no readable info.plist),
+    the full list is returned so behavior degrades to the prior name-prefix
+    matching rather than finding nothing.
+
+    Args:
+        derived_dirs: List of (sort_key, derived_data_path) candidates.
+        project_realpath: realpath of the project being looked up.
+    """
+    confirmed = []
+    for key, path in derived_dirs:
+        if derived_data_matches_project(path, project_realpath) is True:
+            confirmed.append((key, path))
+    return confirmed if confirmed else derived_dirs
+
+
 def find_derived_data_for_project(project_path: str) -> Optional[str]:
     """
     Find the DerivedData directory for a given project.
 
     Xcode regenerates the random-hash suffix when a project moves on disk or
     its Xcode version changes, so multiple matching directories can exist for
-    the same project name. Among matches, pick the one whose
+    the same project name. Candidates are first disambiguated by info.plist's
+    WorkspacePath (so a different project that happens to share a name can't be
+    selected); among the remaining matches, pick the one whose
     `Logs/Build/LogStoreManifest.plist` has the most recent mtime (falling
     back to the directory's own mtime when no manifest is present). Picking
     the wrong DerivedData yields the wrong build logs.
@@ -689,5 +760,6 @@ def find_derived_data_for_project(project_path: str) -> Optional[str]:
     if not candidates:
         return None
 
+    candidates = select_derived_data_dirs_for_project(candidates, normalized_path)
     candidates.sort(key=lambda c: c[0], reverse=True)
     return candidates[0][1]

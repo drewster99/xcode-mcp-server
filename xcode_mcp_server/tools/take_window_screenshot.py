@@ -10,6 +10,11 @@ from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification, show_error_notification
 from xcode_mcp_server.utils.screenshot import _get_all_windows, get_screenshot_path
 
+# Cap on how many windows a single title-substring query will screenshot. A
+# broad substring can match many windows; without a cap that's slow and a
+# privacy footgun. Mirrors take_app_screenshot's behavior.
+MAX_WINDOW_MATCHES = 5
+
 
 @mcp.tool(annotations=TOOL_READONLY)
 @apply_config
@@ -61,6 +66,10 @@ def take_window_screenshot(window_id_or_name: str) -> str:
             show_error_notification(error_msg)
             raise XCodeMCPError(f"No windows found matching '{window_id_or_name}'")
 
+        # Cap the number of matches we screenshot (see MAX_WINDOW_MATCHES).
+        total_matches = len(matches)
+        matches = matches[:MAX_WINDOW_MATCHES]
+
         # Take screenshots
         screenshot_paths = []
 
@@ -94,7 +103,13 @@ def take_window_screenshot(window_id_or_name: str) -> str:
         else:
             show_result_notification(f"Screenshotting {len(matches)} windows")
 
-        return "\n".join(screenshot_paths)
+        result = "\n".join(screenshot_paths)
+        if total_matches > len(matches):
+            result += (
+                f"\n\n[Matched {total_matches} windows; captured the first "
+                f"{len(matches)}. Use a more specific window title or a window ID.]"
+            )
+        return result
 
     except Exception as e:
         if isinstance(e, XCodeMCPError):

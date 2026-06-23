@@ -628,6 +628,12 @@ def generate_project(
     accent_color_dir = os.path.join(assets_dir, "AccentColor.colorset")
     app_icon_dir = os.path.join(assets_dir, "AppIcon.appiconset")
 
+    # Create the project root ourselves with exclusive semantics (no
+    # exist_ok). validate_parent_for_new_project already checked the path was
+    # free, but creating it here non-exist_ok closes the TOCTOU window: if the
+    # path was created in between (e.g. as a symlink pointing elsewhere), this
+    # raises FileExistsError instead of writing through it.
+    os.makedirs(project_dir)
     for d in [workspace_dir, accent_color_dir, app_icon_dir]:
         os.makedirs(d, exist_ok=True)
 
@@ -635,7 +641,9 @@ def generate_project(
     files_created = []
 
     def write_file(path: str, content: str):
-        with open(path, 'w') as f:
+        # Exclusive create ('x') so a symlink planted at this path can't be
+        # followed and a pre-existing file can't be silently overwritten.
+        with open(path, 'x') as f:
             f.write(content)
         # Store relative path from project_dir
         files_created.append(os.path.relpath(path, project_dir))
