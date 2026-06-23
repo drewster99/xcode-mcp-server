@@ -12,9 +12,10 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError
 from xcode_mcp_server.utils.applescript import (
-    BUILD_TIMEOUT_SECONDS,
     build_open_and_wait_applescript,
     build_wait_for_completion_applescript,
+    resolve_build_timeout,
+    format_timeout_duration,
     escape_applescript_string,
     run_applescript,
     show_notification,
@@ -152,16 +153,20 @@ from xcode_mcp_server.utils.xcresult import find_xcresult_bundle, extract_test_r
 @mcp.tool(annotations=TOOL_BUILD)
 @apply_config
 def run_project_tests(project_path: str,
-                     scheme: Optional[str] = None) -> str:
+                     scheme: Optional[str] = None,
+                     timeout: Optional[int] = None) -> str:
     """
     Run tests for the specified Xcode project or workspace.
 
-    Tests will run for up to 10 minutes before timing out. This timeout is hardcoded
-    to prevent issues with test runs hanging indefinitely.
+    Tests run for up to `timeout` seconds (default 600, i.e. 10 minutes) before
+    timing out, which guards against a test run hanging indefinitely. Raise it
+    for large projects whose build-for-testing alone exceeds the default.
 
     Args:
         project_path: Path to Xcode project/workspace directory
         scheme: Optional scheme to test (uses active scheme if not specified)
+        timeout: Maximum seconds to wait for the build-for-testing plus test run
+            to complete. If not provided, defaults to 600. Must be a positive integer.
 
     Returns:
         JSON with test results if tests complete, otherwise plain text status message.
@@ -175,6 +180,10 @@ def run_project_tests(project_path: str,
     """
     # Validate and normalize the project path
     project_path = validate_and_normalize_project_path(project_path, "run_project_tests")
+
+    # Resolve the test timeout up front so an invalid value errors immediately,
+    # before any AppleScript runs or notifications post.
+    effective_timeout = resolve_build_timeout(timeout)
 
     # Show notification
     show_notification("Drew's Xcode MCP", subtitle=os.path.basename(project_path), message="Running tests")
@@ -275,14 +284,14 @@ def run_project_tests(project_path: str,
     script = (
         build_open_and_wait_applescript(escaped_path, escaped_scheme)
         + '    set testResult to test workspaceDoc\n'
-        + build_wait_for_completion_applescript("testResult", BUILD_TIMEOUT_SECONDS)
+        + build_wait_for_completion_applescript("testResult", effective_timeout)
         + failure_extraction_tail
         + 'end tell\n'
     )
 
-    # The script polls inside AppleScript for up to BUILD_TIMEOUT_SECONDS; the
+    # The script polls inside AppleScript for up to effective_timeout; the
     # subprocess timeout must exceed that, plus buffer for workspace load.
-    success, output = run_applescript(script, timeout=BUILD_TIMEOUT_SECONDS + 60)
+    success, output = run_applescript(script, timeout=effective_timeout + 60)
 
     if not success:
         show_error_notification("Failed to run tests", os.path.basename(project_path))
@@ -307,10 +316,10 @@ def run_project_tests(project_path: str,
     output_lines = []
 
     if not completed:
-        minutes = BUILD_TIMEOUT_SECONDS // 60
-        output_lines.append(f"⏳ Tests did not complete within {minutes} minutes")
+        duration = format_timeout_duration(effective_timeout)
+        output_lines.append(f"⏳ Tests did not complete within {duration}")
         output_lines.append(f"Status: {status}")
-        show_warning_notification(f"Tests timeout ({minutes} min)")
+        show_warning_notification(f"Tests timeout ({duration})")
         return '\n'.join(output_lines)
 
     # If tests completed, get detailed results from xcresult

@@ -8,7 +8,7 @@ import threading
 from collections import deque
 from typing import Tuple, List, Dict, Optional
 
-from xcode_mcp_server.exceptions import XCodeMCPError
+from xcode_mcp_server.exceptions import XCodeMCPError, InvalidParameterError
 
 # Global notification setting - initialized by CLI
 NOTIFICATIONS_ENABLED = True
@@ -27,8 +27,9 @@ _NOTIFICATION_HISTORY_LOCK = threading.Lock()
 # workspace document to load.
 WORKSPACE_LOAD_REPEATS = 60
 
-# Maximum time (seconds) to wait for a build or run action to complete in
-# AppleScript polling loops.
+# Default maximum time (seconds) to wait for a build or run action to complete
+# in AppleScript polling loops. Used when a caller doesn't pass an explicit
+# `timeout` — see resolve_build_timeout.
 BUILD_TIMEOUT_SECONDS = 600
 
 # Default subprocess timeout for `osascript` invocations that are expected to
@@ -116,6 +117,19 @@ def build_open_and_wait_applescript(escaped_path: str, escaped_scheme: Optional[
     )
 
 
+def format_timeout_duration(seconds: int) -> str:
+    """Render a timeout as human-readable text for user-facing messages.
+
+    Uses whole minutes only when the value is a clean minute multiple (so the
+    common 600s default reads as "10 minutes"); otherwise reports seconds, so a
+    short caller-supplied timeout reads as "5 seconds" rather than "0 minutes".
+    """
+    if seconds >= 60 and seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute" + ("" if minutes == 1 else "s")
+    return f"{seconds} second" + ("" if seconds == 1 else "s")
+
+
 def build_wait_for_completion_applescript(
     result_var: str = "actionResult",
     timeout_seconds: int = BUILD_TIMEOUT_SECONDS,
@@ -128,18 +142,47 @@ def build_wait_for_completion_applescript(
         result_var: AppleScript variable holding a scheme-action-result.
         timeout_seconds: Seconds before the loop errors out.
     """
-    minutes = timeout_seconds // 60
+    duration = format_timeout_duration(timeout_seconds)
     return (
         f'    set buildWaitTime to 0\n'
         f'    repeat\n'
         f'        if completed of {result_var} is true then exit repeat\n'
         f'        if buildWaitTime >= {timeout_seconds} then\n'
-        f'            error "Build timed out after {minutes} minutes"\n'
+        f'            error "Build timed out after {duration}"\n'
         f'        end if\n'
         f'        delay 0.5\n'
         f'        set buildWaitTime to buildWaitTime + 0.5\n'
         f'    end repeat\n'
     )
+
+
+def resolve_build_timeout(timeout: Optional[int]) -> int:
+    """Resolve the effective build/test timeout in seconds for a tool call.
+
+    Args:
+        timeout: Per-call override in seconds, or None to use the default
+            BUILD_TIMEOUT_SECONDS.
+
+    Returns:
+        The validated timeout in seconds. The caller threads this into BOTH the
+        inner AppleScript poll budget (build_wait_for_completion_applescript)
+        and the outer run_applescript subprocess timeout so the two stay
+        consistent.
+
+    Raises:
+        InvalidParameterError: If `timeout` is provided but is not a positive
+            integer number of seconds. Short timeouts (e.g. 5) are allowed; the
+            caller owns that trade-off.
+    """
+    if timeout is None:
+        return BUILD_TIMEOUT_SECONDS
+    # bool is a subclass of int; reject it explicitly so True/False can't slip
+    # through as 1/0.
+    if isinstance(timeout, bool) or not isinstance(timeout, int):
+        raise InvalidParameterError("timeout must be an integer number of seconds")
+    if timeout <= 0:
+        raise InvalidParameterError("timeout must be a positive number of seconds")
+    return timeout
 
 
 def run_applescript(script: str, timeout: int = DEFAULT_APPLESCRIPT_TIMEOUT) -> Tuple[bool, str]:

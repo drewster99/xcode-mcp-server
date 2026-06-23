@@ -13,9 +13,9 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
-    BUILD_TIMEOUT_SECONDS,
     build_open_and_wait_applescript,
     build_wait_for_completion_applescript,
+    resolve_build_timeout,
     escape_applescript_string,
     run_applescript,
     show_notification,
@@ -289,12 +289,14 @@ def build_project(project_path: str,
                  scheme: Optional[str] = None,
                  include_warnings: Optional[bool] = None,
                  regex_filter: Optional[str] = None,
-                 max_lines: int = 25) -> str:
+                 max_lines: int = 25,
+                 timeout: Optional[int] = None) -> str:
     """
     Build the specified Xcode project or workspace.
 
-    Builds will run for up to 10 minutes before timing out. This timeout is hardcoded
-    to prevent issues with builds hanging indefinitely.
+    Builds run for up to `timeout` seconds (default 600, i.e. 10 minutes) before
+    timing out, which guards against a build that hangs indefinitely. Raise it
+    for large projects whose cold build exceeds the default.
 
     Args:
         project_path: Path to an Xcode project or workspace directory.
@@ -302,6 +304,8 @@ def build_project(project_path: str,
         include_warnings: Include warnings in build output. If not provided, uses global setting.
         regex_filter: Optional regex to filter error/warning lines
         max_lines: Maximum number of error/warning lines to show (default 25)
+        timeout: Maximum seconds to wait for the build to complete. If not
+            provided, defaults to 600. Must be a positive integer.
 
     Returns:
         Always returns JSON with format:
@@ -316,6 +320,10 @@ def build_project(project_path: str,
     # Validate include_warnings parameter
     if include_warnings is not None and not isinstance(include_warnings, bool):
         raise InvalidParameterError("include_warnings must be a boolean value")
+
+    # Resolve the build timeout up front so an invalid value errors immediately,
+    # before any AppleScript runs.
+    effective_timeout = resolve_build_timeout(timeout)
 
     # Validate regex_filter up front so a bad pattern produces a clear error
     # immediately, before any AppleScript runs. The supplement helper assumes
@@ -340,7 +348,7 @@ def build_project(project_path: str,
     script = (
         build_open_and_wait_applescript(escaped_path, escaped_scheme)
         + '    set actionResult to build workspaceDoc\n'
-        + build_wait_for_completion_applescript("actionResult", BUILD_TIMEOUT_SECONDS)
+        + build_wait_for_completion_applescript("actionResult", effective_timeout)
         + '    set buildStatus to "unknown"\n'
         + '    try\n'
         + '        set buildStatus to status of actionResult as string\n'
@@ -359,10 +367,10 @@ def build_project(project_path: str,
         manifest_path = os.path.join(derived_data_path, "Logs", "Build", "LogStoreManifest.plist")
         pre_build_uuids = snapshot_build_uuids(manifest_path)
 
-    # The script polls inside AppleScript for up to BUILD_TIMEOUT_SECONDS; the
+    # The script polls inside AppleScript for up to effective_timeout; the
     # subprocess timeout must exceed that, with a small buffer for workspace
     # load and IPC overhead.
-    success, output = run_applescript(script, timeout=BUILD_TIMEOUT_SECONDS + 60)
+    success, output = run_applescript(script, timeout=effective_timeout + 60)
 
     if success:
         # Parse the BUILD_STATUS: prefix from the AppleScript output
