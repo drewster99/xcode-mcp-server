@@ -12,6 +12,7 @@ from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError, InvalidParameterError
+from xcode_mcp_server.utils.run_guard import exclusive_per_project
 from xcode_mcp_server.utils.applescript import (
     resolve_build_timeout,
     format_timeout_duration,
@@ -32,6 +33,7 @@ from xcode_mcp_server.utils.xcresult import (
 
 @mcp.tool(annotations=TOOL_BUILD)
 @apply_config
+@exclusive_per_project
 def run_project_until_terminated(project_path: str,
                                   scheme: Optional[str] = None,
                                   regex_filter: Optional[str] = None,

@@ -11,6 +11,7 @@ from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import InvalidParameterError
+from xcode_mcp_server.utils.run_guard import exclusive_per_project
 from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
     build_wait_for_completion_applescript,
@@ -152,6 +153,7 @@ from xcode_mcp_server.utils.xcresult import snapshot_xcresult_paths, wait_for_xc
 
 @mcp.tool(annotations=TOOL_BUILD)
 @apply_config
+@exclusive_per_project
 def run_project_tests(project_path: str,
                      scheme: Optional[str] = None,
                      timeout: Optional[int] = None) -> str:
