@@ -23,13 +23,73 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from xcode_mcp_server.utils.build_log_parser import parse_xcactivitylog
+import xcode_mcp_server.utils.build_log_parser as build_log_parser
+from xcode_mcp_server.utils.build_log_parser import (
+    parse_xcactivitylog,
+    select_derived_data_dirs_for_project,
+)
 
 
 def _write_gzipped_log(path: str, text: str) -> None:
     """xcactivitylog files are gzipped — write a fake one."""
     with gzip.open(path, 'wb') as f:
         f.write(text.encode('utf-8'))
+
+
+class SelectDerivedDataDirsTests(unittest.TestCase):
+    """The name-prefix candidate list must collapse to confirmed dirs, and when
+    none are confirmed fall back ONLY to dirs of unknown ownership — never to
+    ones info.plist proved belong to a different same-named project."""
+
+    def setUp(self):
+        self._orig = build_log_parser.derived_data_matches_project
+
+    def tearDown(self):
+        build_log_parser.derived_data_matches_project = self._orig
+
+    def _patch(self, verdicts):
+        build_log_parser.derived_data_matches_project = (
+            lambda path, project_realpath: verdicts[path]
+        )
+
+    def test_confirmed_only_when_any_confirmed(self):
+        self._patch({'/c1': True, '/c2': True, '/mm': False, '/uk': None})
+        dirs = [(0.0, '/c1'), (0.0, '/c2'), (0.0, '/mm'), (0.0, '/uk')]
+        self.assertEqual(
+            select_derived_data_dirs_for_project(dirs, '/p'),
+            [(0.0, '/c1'), (0.0, '/c2')],
+        )
+
+    def test_falls_back_to_unknown_excluding_mismatch(self):
+        self._patch({'/mm': False, '/uk': None})
+        dirs = [(0.0, '/mm'), (0.0, '/uk')]
+        self.assertEqual(
+            select_derived_data_dirs_for_project(dirs, '/p'),
+            [(0.0, '/uk')],
+        )
+
+    def test_all_mismatch_returns_empty(self):
+        self._patch({'/mm1': False, '/mm2': False})
+        dirs = [(0.0, '/mm1'), (0.0, '/mm2')]
+        self.assertEqual(select_derived_data_dirs_for_project(dirs, '/p'), [])
+
+    def test_find_derived_data_returns_none_when_all_mismatch(self):
+        """find_derived_data_for_project must return None (not IndexError) when
+        the selector filters every candidate out as a proven mismatch."""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as base:
+            os.makedirs(os.path.join(base, "MyApp-abc123"))
+            # Every name-prefix dir is a proven mismatch -> selector returns [].
+            build_log_parser.derived_data_matches_project = (
+                lambda path, project_realpath: False
+            )
+            with mock.patch.object(
+                build_log_parser.os.path, "expanduser", return_value=base
+            ):
+                result = build_log_parser.find_derived_data_for_project(
+                    "/somewhere/MyApp.xcodeproj"
+                )
+        self.assertIsNone(result)
 
 
 class PathsWithSpacesTests(unittest.TestCase):

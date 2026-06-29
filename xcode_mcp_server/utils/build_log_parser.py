@@ -696,20 +696,29 @@ def select_derived_data_dirs_for_project(
     confirms belong to `project_realpath`.
 
     If at least one candidate is positively confirmed, only confirmed ones are
-    returned (excluding any that info.plist proves belong to a different
-    same-named project). If none can be confirmed (no readable info.plist),
-    the full list is returned so behavior degrades to the prior name-prefix
-    matching rather than finding nothing.
+    returned. Otherwise the fallback is restricted to candidates whose
+    ownership is UNKNOWN (info.plist missing/unreadable, matcher returns None)
+    — never to candidates info.plist proves belong to a DIFFERENT same-named
+    project (matcher returns False). Including proven mismatches in the fallback
+    would defeat the point of the check: a same-named but unrelated project's
+    build logs/test results could be returned. When every candidate is a proven
+    mismatch the result is empty — there is genuinely no DerivedData for this
+    project, and returning nothing is correct (finding none beats returning
+    another project's results).
 
     Args:
         derived_dirs: List of (sort_key, derived_data_path) candidates.
         project_realpath: realpath of the project being looked up.
     """
     confirmed = []
+    unknown = []
     for key, path in derived_dirs:
-        if derived_data_matches_project(path, project_realpath) is True:
+        match = derived_data_matches_project(path, project_realpath)
+        if match is True:
             confirmed.append((key, path))
-    return confirmed if confirmed else derived_dirs
+        elif match is None:
+            unknown.append((key, path))
+    return confirmed if confirmed else unknown
 
 
 def find_derived_data_for_project(project_path: str) -> Optional[str]:
@@ -769,5 +778,10 @@ def find_derived_data_for_project(project_path: str) -> Optional[str]:
         return None
 
     candidates = select_derived_data_dirs_for_project(candidates, normalized_path)
+    # select_... can now return [] when every name-prefix candidate is a proven
+    # mismatch (a different same-named project); there is no DerivedData for this
+    # project in that case.
+    if not candidates:
+        return None
     candidates.sort(key=lambda c: c[0], reverse=True)
     return candidates[0][1]
