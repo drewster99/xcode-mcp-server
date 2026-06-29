@@ -15,10 +15,12 @@ from xcode_mcp_server.utils.applescript import (
     show_notification,
     show_error_notification,
 )
+from xcode_mcp_server.utils.run_guard import exclusive_per_project
 
 
 @mcp.tool(annotations=TOOL_BUILD)
 @apply_config
+@exclusive_per_project
 def run_project_unmonitored(project_path: str,
                              scheme: Optional[str] = None) -> str:
     """
