@@ -139,25 +139,37 @@ def format_timeout_duration(seconds: int) -> str:
 def build_wait_for_completion_applescript(
     result_var: str = "actionResult",
     timeout_seconds: int = BUILD_TIMEOUT_SECONDS,
+    action_name: str = "Build",
 ) -> str:
     """
     Return the AppleScript snippet that polls `<result_var>.completed` until
     true or the timeout fires.
 
+    Elapsed time is measured against AppleScript's wall clock
+    (`(current date) - actionStartDate`) rather than by summing fixed `delay`
+    increments. Each poll iteration also pays an Apple Event round-trip, so a
+    counter that advances only by the `delay` amount undercounts real time and
+    lets the loop run proportionally longer than `timeout_seconds` — long
+    enough to overrun the caller's subprocess budget and get osascript killed
+    before this loop can raise. Wall-clock keeps the bound honest regardless of
+    IPC overhead.
+
     Args:
         result_var: AppleScript variable holding a scheme-action-result.
         timeout_seconds: Seconds before the loop errors out.
+        action_name: Human label for the timeout error ("Build", "Clean",
+            "Tests") so the message matches the action the caller actually ran.
+            Internal constant, not user input — interpolated unescaped.
     """
     duration = format_timeout_duration(timeout_seconds)
     return (
-        f'    set buildWaitTime to 0\n'
+        f'    set actionStartDate to (current date)\n'
         f'    repeat\n'
         f'        if completed of {result_var} is true then exit repeat\n'
-        f'        if buildWaitTime >= {timeout_seconds} then\n'
-        f'            error "Build timed out after {duration}"\n'
+        f'        if ((current date) - actionStartDate) >= {timeout_seconds} then\n'
+        f'            error "{action_name} timed out after {duration}"\n'
         f'        end if\n'
         f'        delay 0.5\n'
-        f'        set buildWaitTime to buildWaitTime + 0.5\n'
         f'    end repeat\n'
     )
 

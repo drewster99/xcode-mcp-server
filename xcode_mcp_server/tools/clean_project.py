@@ -12,9 +12,11 @@ from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
     build_wait_for_completion_applescript,
     resolve_build_timeout,
+    format_timeout_duration,
     escape_applescript_string,
     run_applescript,
     show_result_notification,
+    show_warning_notification,
     show_error_notification,
 )
 
@@ -45,7 +47,7 @@ def clean_project(project_path: str, timeout: Optional[int] = None) -> str:
     # actually finished.
     script = build_open_and_wait_applescript(escaped_path) + (
         '    set actionResult to clean workspaceDoc\n'
-        + build_wait_for_completion_applescript("actionResult", effective_timeout)
+        + build_wait_for_completion_applescript("actionResult", effective_timeout, action_name="Clean")
         + '    return "Clean completed successfully"\n'
         'end tell\n'
     )
@@ -59,6 +61,15 @@ def clean_project(project_path: str, timeout: Optional[int] = None) -> str:
     if success:
         show_result_notification("Clean completed", project_name)
         return output
-    else:
-        show_error_notification("Clean failed", project_name)
-        raise XCodeMCPError(f"Clean failed: {output}")
+
+    # The AppleScript poll loop raises (rather than returning) on timeout, so a
+    # timeout surfaces here as a failed subprocess. Report it as a clean-specific
+    # timeout instead of leaking the wait-helper's wording or treating it as a
+    # hard failure.
+    if "timed out" in output.lower():
+        duration = format_timeout_duration(effective_timeout)
+        show_warning_notification(f"Clean timeout ({duration})")
+        return f"⏳ Clean did not complete within {duration}"
+
+    show_error_notification("Clean failed", project_name)
+    raise XCodeMCPError(f"Clean failed: {output}")

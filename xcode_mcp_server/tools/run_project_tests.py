@@ -286,7 +286,7 @@ def run_project_tests(project_path: str,
     script = (
         build_open_and_wait_applescript(escaped_path, escaped_scheme)
         + '    set testResult to test workspaceDoc\n'
-        + build_wait_for_completion_applescript("testResult", effective_timeout)
+        + build_wait_for_completion_applescript("testResult", effective_timeout, action_name="Tests")
         + failure_extraction_tail
         + 'end tell\n'
     )
