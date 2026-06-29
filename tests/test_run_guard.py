@@ -113,6 +113,42 @@ class RunGuardTests(unittest.TestCase):
         with run_guard._active_lock:
             self.assertEqual(len(run_guard._active_projects), 0)
 
+    def test_project_key_collapses_implicit_workspace(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            proj = os.path.join(d, "Foo.xcodeproj")
+            ws = os.path.join(proj, "project.xcworkspace")
+            os.makedirs(ws)
+            # The implicit workspace must canonicalize to its .xcodeproj.
+            self.assertEqual(run_guard._project_key(ws), os.path.realpath(proj))
+            self.assertEqual(run_guard._project_key(proj), os.path.realpath(proj))
+
+    def test_rejects_implicit_workspace_while_xcodeproj_active(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            proj = os.path.join(d, "Foo.xcodeproj")
+            ws = os.path.join(proj, "project.xcworkspace")
+            os.makedirs(ws)
+            entered = threading.Event()
+            release = threading.Event()
+
+            @exclusive_per_project
+            def tool(project_path):
+                entered.set()
+                release.wait(timeout=5)
+                return "ran"
+
+            t = threading.Thread(target=lambda: tool(proj))
+            t.start()
+            self.assertTrue(entered.wait(timeout=5))
+            try:
+                # Same project named via its implicit workspace must collide.
+                with self.assertRaises(XCodeMCPError):
+                    tool(ws)
+            finally:
+                release.set()
+                t.join(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

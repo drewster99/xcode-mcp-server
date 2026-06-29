@@ -29,12 +29,30 @@ _active_lock = threading.Lock()
 _active_projects: set = set()
 
 
+def _project_key(project_path: str) -> str:
+    """Canonical exclusivity key for a project path.
+
+    Resolves symlinks/trailing slashes via realpath, and additionally collapses
+    a bare `.xcodeproj`'s implicit workspace
+    (`<proj>.xcodeproj/project.xcworkspace`) onto the `.xcodeproj` itself, so a
+    caller naming the project and a caller naming its implicit workspace share
+    one key and can't run concurrently. (realpath alone would key them
+    separately, defeating the guard.)
+    """
+    real = os.path.realpath(project_path)
+    parent = os.path.dirname(real)
+    if os.path.basename(real) == "project.xcworkspace" and parent.endswith(".xcodeproj"):
+        return parent
+    return real
+
+
 def exclusive_per_project(func):
     """Reject a concurrent run/test of the same project (fail fast).
 
-    Keyed by ``os.path.realpath(project_path)``. Apply BELOW ``@apply_config`` so
-    config overrides are resolved first and the original signature still reaches
-    FastMCP:
+    Keyed by ``_project_key(project_path)`` (realpath, with a bare .xcodeproj's
+    implicit project.xcworkspace collapsed onto the .xcodeproj). Apply BELOW
+    ``@apply_config`` so config overrides are resolved first and the original
+    signature still reaches FastMCP:
 
         @mcp.tool(...)
         @apply_config
@@ -48,7 +66,7 @@ def exclusive_per_project(func):
         raw = bound.arguments.get('project_path')
         # An empty/missing path is left to the body's own validation to reject;
         # we just don't guard it.
-        key = os.path.realpath(raw) if raw else None
+        key = _project_key(raw) if raw else None
         if key is None:
             return func(*args, **kwargs)
 
