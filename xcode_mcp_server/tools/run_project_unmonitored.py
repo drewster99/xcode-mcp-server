@@ -15,12 +15,10 @@ from xcode_mcp_server.utils.applescript import (
     show_notification,
     show_error_notification,
 )
-from xcode_mcp_server.utils.run_guard import exclusive_per_project
 
 
 @mcp.tool(annotations=TOOL_BUILD)
 @apply_config
-@exclusive_per_project
 def run_project_unmonitored(project_path: str,
                              scheme: Optional[str] = None) -> str:
     """
@@ -32,6 +30,16 @@ def run_project_unmonitored(project_path: str,
     Use get_runtime_output later (after manual termination) to retrieve logs.
 
     Perfect for: Long-running apps, servers, apps needing extended manual testing
+
+    Note: unlike the monitored run/test tools this is deliberately NOT wrapped
+    in @exclusive_per_project. It is fire-and-forget — it returns as soon as the
+    launch is dispatched while the app keeps running — so the guard would
+    release its per-project key immediately and provide no real protection
+    (it would only block two launches dispatched in the same instant, not a
+    launch that collides with an already-running app). It also does no
+    .xcresult snapshotting, so it has none of the result-isolation the guard
+    exists to protect. Callers are responsible for not launching the same
+    project repeatedly without stopping it.
 
     Args:
         project_path: Path to an Xcode project/workspace directory
