@@ -540,16 +540,21 @@ def extract_build_errors_and_warnings(build_log: str,
 # missing package products).
 
 
-def _gather_xcresult_candidates(project_path: str, logs_subdir: str) -> list:
+def _matching_derived_data_dirs(project_path: str) -> list:
     """
-    Return [(mtime, path), ...] for every .xcresult bundle that belongs to this
-    project, sorted newest-first. Shared by _find_most_recent_xcresult,
-    snapshot_xcresult_paths, and wait_for_xcresult_after_timestamp so they all
-    see an identical candidate set.
+    Return the DerivedData directories that belong to this project, as a list of
+    (sort_key, path). Directory names are `{ProjectName}-{hash}`, so a different
+    project sharing the same name also matches the name prefix; the candidates
+    are then disambiguated by info.plist's WorkspacePath
+    (select_derived_data_dirs_for_project) so an unrelated same-named project
+    can't leak in.
+
+    This is the expensive part of locating .xcresult bundles — it lists the
+    whole DerivedData base and parses each candidate's info.plist — so callers
+    that poll should resolve it ONCE rather than per iteration.
 
     Args:
         project_path: Path to .xcodeproj or .xcworkspace
-        logs_subdir: Either "Launch" (runtime logs) or "Test" (test results)
     """
     normalized_path = os.path.realpath(project_path)
     project_name = (
@@ -579,8 +584,23 @@ def _gather_xcresult_candidates(project_path: str, logs_subdir: str) -> list:
     ]
     if not dir_candidates:
         return []
-    matching_dirs = select_derived_data_dirs_for_project(dir_candidates, normalized_path)
+    return select_derived_data_dirs_for_project(dir_candidates, normalized_path)
 
+
+def _scan_logs_for_xcresults(matching_dirs: list, logs_subdir: str) -> list:
+    """
+    Return [(mtime, path), ...] for every .xcresult bundle under the given
+    DerivedData directories' `Logs/<logs_subdir>` folder, sorted newest-first.
+
+    Cheap relative to _matching_derived_data_dirs (no info.plist parsing), so it
+    is safe to call once per poll iteration. The `Logs/<subdir>` folder is
+    resolved fresh each call because Xcode may create it after the matching
+    DerivedData directory already exists.
+
+    Args:
+        matching_dirs: Output of _matching_derived_data_dirs (key, path) pairs.
+        logs_subdir: Either "Launch" (runtime logs) or "Test" (test results).
+    """
     candidates = []
     for _key, derived_data_path in matching_dirs:
         logs_dir = os.path.join(derived_data_path, "Logs", logs_subdir)
@@ -603,24 +623,42 @@ def _gather_xcresult_candidates(project_path: str, logs_subdir: str) -> list:
     return candidates
 
 
-def snapshot_xcresult_paths(project_path: str, logs_subdir: str = "Launch") -> set:
+def _gather_xcresult_candidates(project_path: str, logs_subdir: str) -> list:
     """
-    Capture the set of .xcresult bundle paths that already exist for this
-    project BEFORE an action is started.
+    Return [(mtime, path), ...] for every .xcresult bundle that belongs to this
+    project, sorted newest-first. Shared by _find_most_recent_xcresult and
+    snapshot_xcresult_mtimes. Single-shot convenience over
+    _matching_derived_data_dirs + _scan_logs_for_xcresults; pollers should call
+    those two directly so the expensive directory matching happens once.
 
-    Passing this to wait_for_xcresult_after_timestamp as `exclude_paths` makes
-    it wait for a bundle that wasn't present beforehand, instead of accepting
-    whichever bundle is newest-by-mtime. With coarse (1-second) filesystem
-    timestamps the pure-timestamp gate can otherwise re-accept a stale prior-run
-    bundle. Note: this does not fully disambiguate two runs of the SAME project
-    started near-simultaneously — that would require bundle-level action
-    metadata — but it removes the common stale-result failure.
+    Args:
+        project_path: Path to .xcodeproj or .xcworkspace
+        logs_subdir: Either "Launch" (runtime logs) or "Test" (test results)
+    """
+    return _scan_logs_for_xcresults(_matching_derived_data_dirs(project_path), logs_subdir)
+
+
+def snapshot_xcresult_mtimes(project_path: str, logs_subdir: str = "Launch") -> dict:
+    """
+    Capture {bundle_path: mtime} for every .xcresult bundle that already exists
+    for this project BEFORE an action is started.
+
+    Passing this to wait_for_xcresult_after_timestamp as `prior_mtimes` lets it
+    wait for a bundle that is genuinely new — either a path that wasn't present
+    beforehand, or a pre-existing path whose mtime has since advanced (Xcode
+    rewriting a bundle in place). Recording the mtime (not just the path) is
+    what makes the in-place-rewrite case work: keying on path alone would
+    exclude such a bundle forever. With coarse (1-second) filesystem timestamps
+    the pure-timestamp gate can otherwise re-accept a stale prior-run bundle.
+    Note: this does not fully disambiguate two runs of the SAME project started
+    near-simultaneously — that would require bundle-level action metadata — but
+    it removes the common stale-result failure.
 
     Args:
         project_path: Path to .xcodeproj or .xcworkspace
         logs_subdir: "Launch" (runtime logs) or "Test" (test results)
     """
-    return {path for _mtime, path in _gather_xcresult_candidates(project_path, logs_subdir)}
+    return {path: mtime for mtime, path in _gather_xcresult_candidates(project_path, logs_subdir)}
 
 
 def _find_most_recent_xcresult(project_path: str, logs_subdir: str) -> Optional[str]:
@@ -663,16 +701,23 @@ def find_xcresult_for_project(project_path: str) -> Optional[str]:
     return _find_most_recent_xcresult(project_path, logs_subdir="Launch")
 
 
-def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int, logs_subdir: str = "Launch", exclude_paths: Optional[set] = None) -> Optional[str]:
+def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int, logs_subdir: str = "Launch", prior_mtimes: Optional[dict] = None) -> Optional[str]:
     """
     Wait for a NEW xcresult bundle produced by the action that just started.
 
-    Selection is the newest candidate that (a) is not in `exclude_paths` — the
-    snapshot of bundles that existed before the action began — and (b) was both
-    created and modified at or after our start time. The exclude-set is the
-    primary guard: it removes prior-run bundles outright, which the coarse
-    (1-second) timestamp gate alone could otherwise re-accept. The timestamp gate
-    remains as a secondary check.
+    Selection is the newest candidate that is genuinely new — meaning either:
+      (a) its path was not present before the action began, AND it was both
+          created and modified at or after our start time; or
+      (b) its path WAS present before but its mtime has advanced past the
+          snapshot value (Xcode rewrote the bundle in place). In this case the
+          ctime can still be the original creation time, so it is not gated on
+          ctime — the advanced mtime is itself proof this action touched it.
+
+    Recording the pre-action mtime per path (`prior_mtimes`) — not just the set
+    of paths — is what makes case (b) work: keying on path alone would exclude a
+    rewritten bundle forever. The mtime/snapshot comparison is the primary
+    guard; the coarse (1-second) timestamp gate is a secondary check for
+    brand-new bundles.
 
     Args:
         project_path: Path to the .xcodeproj or .xcworkspace
@@ -680,14 +725,16 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
         timeout_seconds: Maximum seconds to wait for a valid xcresult file
         logs_subdir: DerivedData logs subdirectory to search — "Launch" for
             runtime-run results (default) or "Test" for test results.
-        exclude_paths: Bundle paths that existed before the action started
-            (from snapshot_xcresult_paths). Pass this so a stale prior-run bundle
-            is never returned. When omitted, falls back to timestamp-only gating.
+        prior_mtimes: {path: mtime} of bundles that existed before the action
+            started (from snapshot_xcresult_mtimes). Pass this so a stale
+            prior-run bundle is never returned and an in-place rewrite still is.
+            When omitted, falls back to timestamp-only gating.
 
     Returns:
         Path to the xcresult file if found, or None if timeout expires or no valid file found
     """
-    excluded = exclude_paths or set()
+    prior = prior_mtimes or {}
+    debug = bool(os.environ.get('XCODE_MCP_DEBUG'))
 
     # Some filesystems store mtime/ctime with only 1-second resolution, so a file
     # created in the same wall-clock second as start_timestamp can read as older.
@@ -697,28 +744,40 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
     effective_start = start_timestamp - timestamp_slack_seconds
 
     start_datetime = datetime.datetime.fromtimestamp(start_timestamp)
-    print(f"Waiting for new xcresult modified at or after: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')} (excluding {len(excluded)} pre-existing)", file=sys.stderr)
+    print(f"Waiting for new xcresult modified at or after: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')} (excluding {len(prior)} pre-existing)", file=sys.stderr)
 
+    # Resolve the matching DerivedData directories ONCE; only the cheap log-dir
+    # scan repeats each iteration (the Logs/<subdir> folder is re-listed inside
+    # the scan because Xcode may create it after this point).
+    matching_dirs = _matching_derived_data_dirs(project_path)
     end_time = time.time() + timeout_seconds
 
     while time.time() < end_time:
-        # Candidates are newest-first; take the newest that is genuinely new
-        # (not in the pre-action snapshot) and passes the timestamp gate.
-        for _mtime, xcresult_path in _gather_xcresult_candidates(project_path, logs_subdir):
-            if xcresult_path in excluded:
-                continue
-            if not os.path.exists(xcresult_path):
-                continue
-            try:
-                create_time = os.path.getctime(xcresult_path)
-                mod_time = os.path.getmtime(xcresult_path)
-            except OSError:
+        # Candidates are newest-first; take the newest that is genuinely new.
+        for mtime, xcresult_path in _scan_logs_for_xcresults(matching_dirs, logs_subdir):
+            prior_mtime = prior.get(xcresult_path)
+
+            if prior_mtime is not None:
+                # Pre-existing path. Only fresh if it was rewritten in place
+                # (mtime advanced past the snapshot) AND that rewrite is at/after
+                # our start — not gated on ctime, which may be the original.
+                if mtime > prior_mtime and mtime >= effective_start:
+                    print(f"Accepting rewritten xcresult: {xcresult_path}", file=sys.stderr)
+                    return xcresult_path
+                if debug:
+                    print(f"Skipping unchanged pre-existing xcresult: {xcresult_path}", file=sys.stderr)
                 continue
 
-            if create_time >= effective_start and mod_time >= effective_start:
+            # Brand-new path (absent from the snapshot). Apply the secondary
+            # timestamp gate as a sanity check on both create and modify times.
+            try:
+                create_time = os.path.getctime(xcresult_path)
+            except OSError:
+                continue
+            if mtime >= effective_start and create_time >= effective_start:
                 print(f"Accepting new xcresult: {xcresult_path}", file=sys.stderr)
                 return xcresult_path
-            else:
+            if debug:
                 print(f"Skipping xcresult older than start time: {xcresult_path}", file=sys.stderr)
 
         time.sleep(1)

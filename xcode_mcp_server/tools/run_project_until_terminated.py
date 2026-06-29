@@ -25,7 +25,7 @@ from xcode_mcp_server.utils.applescript import (
     show_warning_notification,
 )
 from xcode_mcp_server.utils.xcresult import (
-    snapshot_xcresult_paths,
+    snapshot_xcresult_mtimes,
     wait_for_xcresult_after_timestamp,
     extract_console_logs_from_xcresult
 )
@@ -127,7 +127,7 @@ def run_project_until_terminated(project_path: str,
 
     # Snapshot existing runtime xcresults BEFORE launching so we wait for a
     # genuinely new bundle rather than risk re-reading a prior run's logs.
-    existing_xcresults = snapshot_xcresult_paths(normalized_path, logs_subdir="Launch")
+    existing_xcresults = snapshot_xcresult_mtimes(normalized_path, logs_subdir="Launch")
 
     # Capture start time BEFORE running the script
     start_time = time.time()
@@ -175,7 +175,7 @@ def run_project_until_terminated(project_path: str,
 
     # Wait for an xcresult file that was modified at or after our start time
     xcresult_timeout = 10
-    xcresult_path = wait_for_xcresult_after_timestamp(normalized_path, start_time, xcresult_timeout, exclude_paths=existing_xcresults)
+    xcresult_path = wait_for_xcresult_after_timestamp(normalized_path, start_time, xcresult_timeout, prior_mtimes=existing_xcresults)
 
     if not xcresult_path:
         show_error_notification("Run completed but logs unavailable", "Could not find xcresult")

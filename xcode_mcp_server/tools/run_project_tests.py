@@ -24,7 +24,7 @@ from xcode_mcp_server.utils.applescript import (
     show_error_notification,
     show_warning_notification,
 )
-from xcode_mcp_server.utils.xcresult import snapshot_xcresult_paths, wait_for_xcresult_after_timestamp, extract_test_results_from_xcresult
+from xcode_mcp_server.utils.xcresult import snapshot_xcresult_mtimes, wait_for_xcresult_after_timestamp, extract_test_results_from_xcresult
 
 
 # TODO (follow-up): Implement selective test execution with xcodebuild.
@@ -294,7 +294,7 @@ def run_project_tests(project_path: str,
     # Snapshot existing test xcresults and capture start time before launching so
     # we only accept a .xcresult written by THIS test run, not a stale bundle
     # from a previous run.
-    existing_xcresults = snapshot_xcresult_paths(project_path, logs_subdir="Test")
+    existing_xcresults = snapshot_xcresult_mtimes(project_path, logs_subdir="Test")
     test_start_time = time.time()
 
     # The script polls inside AppleScript for up to effective_timeout; the
@@ -330,7 +330,7 @@ def run_project_tests(project_path: str,
     # previous test run's results.
     xcresult_path = wait_for_xcresult_after_timestamp(
         project_path, test_start_time, timeout_seconds=10, logs_subdir="Test",
-        exclude_paths=existing_xcresults
+        prior_mtimes=existing_xcresults
     )
 
     if xcresult_path:
