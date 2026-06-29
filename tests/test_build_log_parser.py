@@ -85,6 +85,23 @@ class MixedLanguageTests(unittest.TestCase):
         finally:
             os.unlink(tmp_path)
 
+    def test_objc_compilec_with_space_in_object_path_tracks_source(self):
+        """The object-file path (under DerivedData) may contain a space; the
+        source file must still be tracked rather than dropped."""
+        log_text = (
+            "CompileC /Users/test/My Project/Build/Foo.o "
+            "/Users/test/My Project/Foo.m normal arm64 objective-c\r"
+        )
+        with tempfile.NamedTemporaryFile(suffix='.xcactivitylog', delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            _write_gzipped_log(tmp_path, log_text)
+            _, compiled = parse_xcactivitylog(tmp_path)
+            self.assertIn('/Users/test/My Project/Foo.m', compiled,
+                          f"compiled files were: {compiled}")
+        finally:
+            os.unlink(tmp_path)
+
     def test_objc_warning_is_extracted(self):
         log_text = (
             "/Users/test/MyProj/Foo.m:10:3: warning: "

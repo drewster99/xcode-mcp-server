@@ -10,6 +10,7 @@ from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
+    build_wait_for_completion_applescript,
     resolve_build_timeout,
     escape_applescript_string,
     run_applescript,
@@ -37,14 +38,20 @@ def clean_project(project_path: str, timeout: Optional[int] = None) -> str:
     escaped_path = escape_applescript_string(normalized_path)
     effective_timeout = resolve_build_timeout(timeout)
 
+    # `clean workspaceDoc` returns a scheme-action-result that completes
+    # asynchronously (same as build/test), so capture it and poll `completed`
+    # rather than assuming the command blocks. This bounds the wait by
+    # `effective_timeout` and avoids reporting success before the clean has
+    # actually finished.
     script = build_open_and_wait_applescript(escaped_path) + (
-        '    clean workspaceDoc\n'
-        '    return "Clean completed successfully"\n'
+        '    set actionResult to clean workspaceDoc\n'
+        + build_wait_for_completion_applescript("actionResult", effective_timeout)
+        + '    return "Clean completed successfully"\n'
         'end tell\n'
     )
 
-    # Clean is synchronous in AppleScript and can take minutes on large projects;
-    # use the same budget as build/test rather than the short default.
+    # The script polls inside AppleScript for up to effective_timeout; the
+    # subprocess timeout must exceed that, plus a buffer for workspace load.
     success, output = run_applescript(script, timeout=effective_timeout + 60)
 
     project_name = os.path.basename(normalized_path)

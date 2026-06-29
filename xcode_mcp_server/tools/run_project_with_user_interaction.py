@@ -2,15 +2,17 @@
 """run_project_with_user_interaction tool - Run app with user interaction"""
 
 import os
+import re
 import sys
 import time
 import datetime
+import subprocess
 from typing import Optional
 
 from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
-from xcode_mcp_server.exceptions import XCodeMCPError
+from xcode_mcp_server.exceptions import XCodeMCPError, InvalidParameterError
 from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
     build_action_completed_check_applescript,
@@ -22,6 +24,7 @@ from xcode_mcp_server.utils.applescript import (
     show_persistent_alert,
 )
 from xcode_mcp_server.utils.xcresult import (
+    snapshot_xcresult_paths,
     wait_for_xcresult_after_timestamp,
     extract_console_logs_from_xcresult
 )
@@ -70,6 +73,15 @@ def run_project_with_user_interaction(project_path: str,
     normalized_path = validate_and_normalize_project_path(project_path, f"Running {scheme_desc} in")
     escaped_path = escape_applescript_string(normalized_path)
 
+    # Validate regex_filter up front so a bad pattern fails immediately rather
+    # than after a multi-minute build+run (it's otherwise only compiled during
+    # log extraction at the very end).
+    if regex_filter and regex_filter.strip():
+        try:
+            re.compile(regex_filter)
+        except re.error as e:
+            raise InvalidParameterError(f"Invalid regex_filter: {e}")
+
     # Show running notification
     project_name = os.path.basename(normalized_path)
     scheme_name = scheme if scheme else "active scheme"
@@ -88,6 +100,10 @@ def run_project_with_user_interaction(project_path: str,
     )
 
     print(f"Launching app...", file=sys.stderr)
+
+    # Snapshot existing runtime xcresults BEFORE launching so we wait for a
+    # genuinely new bundle rather than risk re-reading a prior run's logs.
+    existing_xcresults = snapshot_xcresult_paths(normalized_path, logs_subdir="Launch")
 
     # Capture start time BEFORE running the script
     start_time = time.time()
@@ -126,12 +142,14 @@ def run_project_with_user_interaction(project_path: str,
         escaped_action_id = escape_applescript_string(action_id)
         check_script = build_action_completed_check_applescript(escaped_path, escaped_action_id)
         # Probe once: the action we just started must be present in the
-        # workspace's action results. If it isn't, id matching isn't usable on
-        # this Xcode (the property is inconsistent), and every poll would read
-        # "notfound" and miss natural termination — so fall back to last-action.
+        # workspace's action results. Fall back to the last-action check unless
+        # the probe clearly confirms id matching works — i.e. if the probe
+        # itself errors (probe_ok False) OR returns "notfound". Otherwise a
+        # transient probe failure would leave every later poll erroring and miss
+        # natural termination, hanging the run until the user clicks or the cap.
         probe_ok, probe = run_applescript(check_script)
-        if probe_ok and probe.strip().lower() == "notfound":
-            print("Warning: run action id not found in workspace results; falling back to last-action check", file=sys.stderr)
+        if not probe_ok or probe.strip().lower() == "notfound":
+            print(f"Warning: run action id not usable (probe_ok={probe_ok}, probe={probe!r}); falling back to last-action check", file=sys.stderr)
             check_script = fallback_check_script
     else:
         print("Warning: could not capture run action id; falling back to last-action check", file=sys.stderr)
@@ -195,7 +213,11 @@ def run_project_with_user_interaction(project_path: str,
                 app_terminated = True
                 try:
                     alert_process.terminate()
-                except OSError:
+                    # Reap the terminated osascript so it doesn't linger as a
+                    # defunct child. wait() returns near-instantly once SIGTERM
+                    # lands; the timeout just guards a wedged process.
+                    alert_process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
                     pass
                 break
 
@@ -207,7 +229,8 @@ def run_project_with_user_interaction(project_path: str,
             # still-running app.
             try:
                 alert_process.terminate()
-            except OSError:
+                alert_process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
                 pass
             show_error_notification(
                 f"Interactive run exceeded {MAX_INTERACTIVE_RUN_SECONDS // 60} min",
@@ -245,7 +268,7 @@ def run_project_with_user_interaction(project_path: str,
 
     # Wait for an xcresult file that was modified at or after our start time
     xcresult_timeout = 10
-    xcresult_path = wait_for_xcresult_after_timestamp(normalized_path, start_time, xcresult_timeout)
+    xcresult_path = wait_for_xcresult_after_timestamp(normalized_path, start_time, xcresult_timeout, exclude_paths=existing_xcresults)
 
     if not xcresult_path:
         show_error_notification("Run completed but logs unavailable", "Could not find xcresult")

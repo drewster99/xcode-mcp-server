@@ -277,11 +277,15 @@ def validate_parent_for_new_project(parent_path: str, project_name: str) -> str:
             "Set XCODEMCP_ALLOWED_FOLDERS environment variable."
         )
 
-    # Validate project name contains only safe characters
-    if not re.match(r'^[A-Za-z0-9][A-Za-z0-9 _-]*$', project_name):
+    # Disallow spaces (and other punctuation): the name is interpolated unquoted
+    # into project.pbxproj fields (path/name/productName), where a space
+    # terminates the token and yields a syntactically invalid OpenStep plist that
+    # Xcode refuses to open. Quoting in the template would be an alternative, but
+    # bare-identifier names keep the generated pbxproj simplest and safest.
+    if not re.match(r'^[A-Za-z0-9][A-Za-z0-9_-]*$', project_name):
         raise InvalidParameterError(
             "project_name must start with a letter or digit and contain only "
-            "letters, digits, spaces, hyphens, or underscores"
+            "letters, digits, hyphens, or underscores (no spaces)"
         )
 
     # Prevent overwriting existing projects

@@ -540,6 +540,89 @@ def extract_build_errors_and_warnings(build_log: str,
 # missing package products).
 
 
+def _gather_xcresult_candidates(project_path: str, logs_subdir: str) -> list:
+    """
+    Return [(mtime, path), ...] for every .xcresult bundle that belongs to this
+    project, sorted newest-first. Shared by _find_most_recent_xcresult,
+    snapshot_xcresult_paths, and wait_for_xcresult_after_timestamp so they all
+    see an identical candidate set.
+
+    Args:
+        project_path: Path to .xcodeproj or .xcworkspace
+        logs_subdir: Either "Launch" (runtime logs) or "Test" (test results)
+    """
+    normalized_path = os.path.realpath(project_path)
+    project_name = (
+        os.path.basename(normalized_path)
+        .replace('.xcworkspace', '')
+        .replace('.xcodeproj', '')
+    )
+    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
+
+    if not os.path.exists(derived_data_base):
+        return []
+
+    try:
+        entries = os.listdir(derived_data_base)
+    except OSError as e:
+        print(
+            f"Error listing DerivedData base {derived_data_base}: {e}",
+            file=sys.stderr,
+        )
+        return []
+
+    dir_candidates = [
+        (0.0, os.path.join(derived_data_base, d))
+        for d in entries
+        if d.startswith(project_name + "-")
+        and os.path.isdir(os.path.join(derived_data_base, d))
+    ]
+    if not dir_candidates:
+        return []
+    matching_dirs = select_derived_data_dirs_for_project(dir_candidates, normalized_path)
+
+    candidates = []
+    for _key, derived_data_path in matching_dirs:
+        logs_dir = os.path.join(derived_data_path, "Logs", logs_subdir)
+        if not os.path.isdir(logs_dir):
+            continue
+        try:
+            for f in os.listdir(logs_dir):
+                if not f.endswith('.xcresult'):
+                    continue
+                full_path = os.path.join(logs_dir, f)
+                try:
+                    candidates.append((os.path.getmtime(full_path), full_path))
+                except OSError:
+                    continue
+        except OSError as e:
+            print(f"Error listing {logs_dir}: {e}", file=sys.stderr)
+            continue
+
+    candidates.sort(reverse=True)
+    return candidates
+
+
+def snapshot_xcresult_paths(project_path: str, logs_subdir: str = "Launch") -> set:
+    """
+    Capture the set of .xcresult bundle paths that already exist for this
+    project BEFORE an action is started.
+
+    Passing this to wait_for_xcresult_after_timestamp as `exclude_paths` makes
+    it wait for a bundle that wasn't present beforehand, instead of accepting
+    whichever bundle is newest-by-mtime. With coarse (1-second) filesystem
+    timestamps the pure-timestamp gate can otherwise re-accept a stale prior-run
+    bundle. Note: this does not fully disambiguate two runs of the SAME project
+    started near-simultaneously — that would require bundle-level action
+    metadata — but it removes the common stale-result failure.
+
+    Args:
+        project_path: Path to .xcodeproj or .xcworkspace
+        logs_subdir: "Launch" (runtime logs) or "Test" (test results)
+    """
+    return {path for _mtime, path in _gather_xcresult_candidates(project_path, logs_subdir)}
+
+
 def _find_most_recent_xcresult(project_path: str, logs_subdir: str) -> Optional[str]:
     """
     Find the globally most-recent .xcresult file across the DerivedData
@@ -561,57 +644,9 @@ def _find_most_recent_xcresult(project_path: str, logs_subdir: str) -> Optional[
     Returns:
         Path to the most-recent matching .xcresult, or None.
     """
-    normalized_path = os.path.realpath(project_path)
-    project_name = (
-        os.path.basename(normalized_path)
-        .replace('.xcworkspace', '')
-        .replace('.xcodeproj', '')
-    )
-    derived_data_base = os.path.expanduser("~/Library/Developer/Xcode/DerivedData")
-
-    if not os.path.exists(derived_data_base):
-        return None
-
-    try:
-        entries = os.listdir(derived_data_base)
-    except OSError as e:
-        print(
-            f"Error listing DerivedData base {derived_data_base}: {e}",
-            file=sys.stderr,
-        )
-        return None
-
-    dir_candidates = [
-        (0.0, os.path.join(derived_data_base, d))
-        for d in entries
-        if d.startswith(project_name + "-")
-        and os.path.isdir(os.path.join(derived_data_base, d))
-    ]
-    if not dir_candidates:
-        return None
-    matching_dirs = select_derived_data_dirs_for_project(dir_candidates, normalized_path)
-
-    candidates = []
-    for _key, derived_data_path in matching_dirs:
-        logs_dir = os.path.join(derived_data_path, "Logs", logs_subdir)
-        if not os.path.isdir(logs_dir):
-            continue
-        try:
-            for f in os.listdir(logs_dir):
-                if not f.endswith('.xcresult'):
-                    continue
-                full_path = os.path.join(logs_dir, f)
-                try:
-                    candidates.append((os.path.getmtime(full_path), full_path))
-                except OSError:
-                    continue
-        except OSError as e:
-            print(f"Error listing {logs_dir}: {e}", file=sys.stderr)
-            continue
-
+    candidates = _gather_xcresult_candidates(project_path, logs_subdir)
     if not candidates:
         return None
-    candidates.sort(reverse=True)
     return candidates[0][1]
 
 
@@ -628,13 +663,16 @@ def find_xcresult_for_project(project_path: str) -> Optional[str]:
     return _find_most_recent_xcresult(project_path, logs_subdir="Launch")
 
 
-def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int, logs_subdir: str = "Launch") -> Optional[str]:
+def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float, timeout_seconds: int, logs_subdir: str = "Launch", exclude_paths: Optional[set] = None) -> Optional[str]:
     """
-    Wait for an xcresult file that was created AND modified at or after the given timestamp.
+    Wait for a NEW xcresult bundle produced by the action that just started.
 
-    This ensures we don't accidentally get results from a previous run by only
-    accepting xcresult files where BOTH the creation time and modification time
-    are at or after our operation started.
+    Selection is the newest candidate that (a) is not in `exclude_paths` — the
+    snapshot of bundles that existed before the action began — and (b) was both
+    created and modified at or after our start time. The exclude-set is the
+    primary guard: it removes prior-run bundles outright, which the coarse
+    (1-second) timestamp gate alone could otherwise re-accept. The timestamp gate
+    remains as a secondary check.
 
     Args:
         project_path: Path to the .xcodeproj or .xcworkspace
@@ -642,10 +680,15 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
         timeout_seconds: Maximum seconds to wait for a valid xcresult file
         logs_subdir: DerivedData logs subdirectory to search — "Launch" for
             runtime-run results (default) or "Test" for test results.
+        exclude_paths: Bundle paths that existed before the action started
+            (from snapshot_xcresult_paths). Pass this so a stale prior-run bundle
+            is never returned. When omitted, falls back to timestamp-only gating.
 
     Returns:
         Path to the xcresult file if found, or None if timeout expires or no valid file found
     """
+    excluded = exclude_paths or set()
+
     # Some filesystems store mtime/ctime with only 1-second resolution, so a file
     # created in the same wall-clock second as start_timestamp can read as older.
     # Allow a small slack so we don't time out waiting for a result that's
@@ -654,34 +697,29 @@ def wait_for_xcresult_after_timestamp(project_path: str, start_timestamp: float,
     effective_start = start_timestamp - timestamp_slack_seconds
 
     start_datetime = datetime.datetime.fromtimestamp(start_timestamp)
-    print(f"Waiting for xcresult modified at or after: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}", file=sys.stderr)
+    print(f"Waiting for new xcresult modified at or after: {start_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')} (excluding {len(excluded)} pre-existing)", file=sys.stderr)
 
     end_time = time.time() + timeout_seconds
 
     while time.time() < end_time:
-        xcresult_path = _find_most_recent_xcresult(project_path, logs_subdir=logs_subdir)
-
-        if xcresult_path and os.path.exists(xcresult_path):
-            mod_time = os.path.getmtime(xcresult_path)
-            create_time = os.path.getctime(xcresult_path)
-
-            mod_datetime = datetime.datetime.fromtimestamp(mod_time)
-            create_datetime = datetime.datetime.fromtimestamp(create_time)
-
-            print(f"Found xcresult - created: {create_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')}, modified: {mod_datetime.strftime('%Y-%m-%d %H:%M:%S.%f')} ({xcresult_path})", file=sys.stderr)
+        # Candidates are newest-first; take the newest that is genuinely new
+        # (not in the pre-action snapshot) and passes the timestamp gate.
+        for _mtime, xcresult_path in _gather_xcresult_candidates(project_path, logs_subdir):
+            if xcresult_path in excluded:
+                continue
+            if not os.path.exists(xcresult_path):
+                continue
+            try:
+                create_time = os.path.getctime(xcresult_path)
+                mod_time = os.path.getmtime(xcresult_path)
+            except OSError:
+                continue
 
             if create_time >= effective_start and mod_time >= effective_start:
-                print(f"xcresult creation and modification times are both newer than start time - accepting it", file=sys.stderr)
+                print(f"Accepting new xcresult: {xcresult_path}", file=sys.stderr)
                 return xcresult_path
             else:
-                if create_time < effective_start:
-                    time_diff = effective_start - create_time
-                    print(f"xcresult creation time is {time_diff:.2f} seconds older than start time - waiting for newer file...", file=sys.stderr)
-                if mod_time < effective_start:
-                    time_diff = effective_start - mod_time
-                    print(f"xcresult modification time is {time_diff:.2f} seconds older than start time - waiting for newer file...", file=sys.stderr)
-        else:
-            print(f"No xcresult file found yet - waiting...", file=sys.stderr)
+                print(f"Skipping xcresult older than start time: {xcresult_path}", file=sys.stderr)
 
         time.sleep(1)
 

@@ -196,8 +196,12 @@ def parse_xcactivitylog(log_path: str) -> Tuple[List[Dict], Set[str]]:
     #   CompileC <output>.o <source>.m normal arm64 objective-c ...
     #   CompileMetalFile <source>.metal ...
     # We want the SOURCE path, which is the last filename-with-known-extension.
+    # The object-file path must allow spaces too (DerivedData lives under the
+    # user's home, which can contain a space) — `\S+` would break the whole
+    # match and silently drop the source file from compiled_files, leaving its
+    # warnings stale. Mirror the source group's space-tolerant style.
     cc_compile_pattern = re.compile(
-        rf'Compile(?:C|Cpp|ObjC|ObjCpp) \S+\.o (/{path_char}+?\.(?:m|mm|c|cc|cpp|cxx))(?= \(in target|\s+normal\s|\s+[a-z]|\s*[\r\n]|\s*$)'
+        rf'Compile(?:C|Cpp|ObjC|ObjCpp) /{path_char}+?\.o (/{path_char}+?\.(?:m|mm|c|cc|cpp|cxx))(?= \(in target|\s+normal\s|\s+[a-z]|\s*[\r\n]|\s*$)'
     )
     metal_compile_pattern = re.compile(
         rf'CompileMetalFile (/{path_char}+?\.metal)(?= \(in target|\s*[\r\n]|\s*$)'
@@ -673,9 +677,13 @@ def derived_data_matches_project(derived_data_path: str, project_realpath: str) 
     if wp == project_realpath:
         return True
     # A bare .xcodeproj is backed by an implicit workspace at
-    # <proj>.xcodeproj/project.xcworkspace, so accept a containment match in
-    # either direction rather than requiring an exact string equal.
-    if wp.startswith(project_realpath + os.sep) or project_realpath.startswith(wp + os.sep):
+    # <proj>.xcodeproj/project.xcworkspace, so accept that exact inner/outer
+    # relationship in either direction. (Earlier this used arbitrary-depth
+    # startswith containment, which could mis-confirm an unrelated same-named
+    # project that merely happened to be nested in the tree.)
+    if wp == os.path.join(project_realpath, "project.xcworkspace"):
+        return True
+    if project_realpath == os.path.join(wp, "project.xcworkspace"):
         return True
     return False
 

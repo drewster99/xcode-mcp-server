@@ -23,7 +23,7 @@ from xcode_mcp_server.utils.applescript import (
     show_error_notification,
     show_warning_notification,
 )
-from xcode_mcp_server.utils.xcresult import wait_for_xcresult_after_timestamp, extract_test_results_from_xcresult
+from xcode_mcp_server.utils.xcresult import snapshot_xcresult_paths, wait_for_xcresult_after_timestamp, extract_test_results_from_xcresult
 
 
 # TODO (follow-up): Implement selective test execution with xcodebuild.
@@ -289,8 +289,10 @@ def run_project_tests(project_path: str,
         + 'end tell\n'
     )
 
-    # Capture start time before launching so we only accept a .xcresult written
-    # by THIS test run, not a stale bundle from a previous run.
+    # Snapshot existing test xcresults and capture start time before launching so
+    # we only accept a .xcresult written by THIS test run, not a stale bundle
+    # from a previous run.
+    existing_xcresults = snapshot_xcresult_paths(project_path, logs_subdir="Test")
     test_start_time = time.time()
 
     # The script polls inside AppleScript for up to effective_timeout; the
@@ -298,6 +300,14 @@ def run_project_tests(project_path: str,
     success, output = run_applescript(script, timeout=effective_timeout + 60)
 
     if not success:
+        # The AppleScript poll loop raises (rather than returning) when it times
+        # out, so a timeout surfaces here as a failed subprocess. Translate it
+        # into a clear test-specific message instead of leaking the shared
+        # wait-helper's raw "Build timed out…" text.
+        if "timed out" in output.lower():
+            duration = format_timeout_duration(effective_timeout)
+            show_warning_notification(f"Tests timeout ({duration})")
+            return f"⏳ Tests did not complete within {duration}"
         show_error_notification("Failed to run tests", os.path.basename(project_path))
         return f"Failed to run tests: {output}"
 
@@ -305,32 +315,20 @@ def run_project_tests(project_path: str,
     if os.environ.get('XCODE_MCP_DEBUG'):
         print(f"DEBUG: Raw test output:\n{output}\n", file=sys.stderr)
 
-    # Parse the AppleScript output to get test status
-    lines = output.split('\n')
+    # Parse the AppleScript output to get test status. A timeout never reaches
+    # here (the poll loop raises and is handled in the `if not success` branch
+    # above), so the action always completed; `status` drives the messaging.
     status = ""
-    completed = False
-
-    for line in lines:
+    for line in output.split('\n'):
         if line.startswith("Status: "):
             status = line.replace("Status: ", "").strip()
-        elif line.startswith("Completed: "):
-            completed = line.replace("Completed: ", "").strip().lower() == "true"
-
-    # Format the output
-    output_lines = []
-
-    if not completed:
-        duration = format_timeout_duration(effective_timeout)
-        output_lines.append(f"⏳ Tests did not complete within {duration}")
-        output_lines.append(f"Status: {status}")
-        show_warning_notification(f"Tests timeout ({duration})")
-        return '\n'.join(output_lines)
 
     # If tests completed, get detailed results from xcresult. Gate on the start
     # timestamp so a not-yet-finalized bundle doesn't cause us to return the
     # previous test run's results.
     xcresult_path = wait_for_xcresult_after_timestamp(
-        project_path, test_start_time, timeout_seconds=10, logs_subdir="Test"
+        project_path, test_start_time, timeout_seconds=10, logs_subdir="Test",
+        exclude_paths=existing_xcresults
     )
 
     if xcresult_path:

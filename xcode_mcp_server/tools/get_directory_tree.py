@@ -181,15 +181,11 @@ def get_directory_tree(directory_path: str, max_depth: int = 4) -> str:
     except Exception as e:
         raise XCodeMCPError(f"Error building directory tree for {directory_path}: {str(e)}")
 
+    # Traversal stops as soon as `emitted` hits MAX_TREE_LINES, so
+    # hierarchy_lines never exceeds the cap — `overflowed` is the only signal
+    # that entries were dropped.
     truncation_note = ""
-    if len(hierarchy_lines) > MAX_TREE_LINES:
-        original = len(hierarchy_lines)
-        hierarchy_lines = hierarchy_lines[:MAX_TREE_LINES]
-        truncation_note = (
-            f"\n\n[Truncated: showing {MAX_TREE_LINES} of {original} lines. "
-            f"Lower max_depth or call get_directory_listing on a subdirectory.]"
-        )
-    elif overflowed:
+    if overflowed:
         truncation_note = (
             f"\n\n[Truncated at {MAX_TREE_LINES} lines; the tree has more entries. "
             f"Lower max_depth or call get_directory_listing on a subdirectory.]"

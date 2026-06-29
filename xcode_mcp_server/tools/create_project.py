@@ -28,8 +28,17 @@ SUPPORTED_PLATFORMS = {"ios", "macos"}
 # validation a value containing ';', '{', whitespace, quotes, or newlines could
 # inject or corrupt build settings. Restrict to the characters Apple actually
 # allows so the generated pbxproj can't be broken out of.
-_BUNDLE_IDENTIFIER_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9.\-]*$')
-_DEPLOYMENT_TARGET_RE = re.compile(r'^\d+(\.\d+)*$')
+# Reverse-DNS style: dot-separated segments, each a non-empty run of
+# letters/digits/hyphens that starts and ends alphanumeric. This still blocks
+# every pbxproj-breaking character but additionally rejects structurally
+# malformed values the old `[A-Za-z0-9.\-]*` accepted (e.g. "com..example",
+# "com.example." with a trailing dot, "a....").
+_BUNDLE_IDENTIFIER_RE = re.compile(
+    r'^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$'
+)
+# One to three dot-separated numeric components (e.g. "26", "17.0", "17.0.1");
+# rejects nonsense like "1.2.3.4.5".
+_DEPLOYMENT_TARGET_RE = re.compile(r'^\d+(\.\d+){0,2}$')
 
 
 @mcp.tool(annotations=TOOL_CREATE)

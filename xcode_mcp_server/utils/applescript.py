@@ -32,6 +32,12 @@ WORKSPACE_LOAD_REPEATS = 60
 # `timeout` — see resolve_build_timeout.
 BUILD_TIMEOUT_SECONDS = 600
 
+# Upper bound on a caller-supplied `timeout`. Two hours is far above any
+# legitimate build/test/run, so it never blocks real use, while still rejecting
+# an obviously-wrong value (e.g. milliseconds passed as seconds, 600000) that
+# would otherwise pin a tool worker and Xcode automation for hours or days.
+MAX_BUILD_TIMEOUT_SECONDS = 7200
+
 # Default subprocess timeout for `osascript` invocations that are expected to
 # return quickly (lookups, cleanup commands, individual status checks). Callers
 # that wrap a long-running inner AppleScript loop (build/run/test) must pass an
@@ -199,8 +205,8 @@ def resolve_build_timeout(timeout: Optional[int]) -> int:
 
     Raises:
         InvalidParameterError: If `timeout` is provided but is not a positive
-            integer number of seconds. Short timeouts (e.g. 5) are allowed; the
-            caller owns that trade-off.
+            integer number of seconds, or exceeds MAX_BUILD_TIMEOUT_SECONDS.
+            Short timeouts (e.g. 5) are allowed; the caller owns that trade-off.
     """
     if timeout is None:
         return BUILD_TIMEOUT_SECONDS
@@ -210,6 +216,14 @@ def resolve_build_timeout(timeout: Optional[int]) -> int:
         raise InvalidParameterError("timeout must be an integer number of seconds")
     if timeout <= 0:
         raise InvalidParameterError("timeout must be a positive number of seconds")
+    if timeout > MAX_BUILD_TIMEOUT_SECONDS:
+        # Reject rather than silently clamp: a value this large is almost always
+        # a mistake (e.g. milliseconds passed as seconds), and clamping would
+        # still run a multi-hour job without surfacing the error.
+        raise InvalidParameterError(
+            f"timeout must be at most {MAX_BUILD_TIMEOUT_SECONDS} seconds "
+            f"({MAX_BUILD_TIMEOUT_SECONDS // 3600} hours)"
+        )
     return timeout
 
 
