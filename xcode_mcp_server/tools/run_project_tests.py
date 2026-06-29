@@ -10,11 +10,12 @@ from typing import Optional, List
 from xcode_mcp_server.server import mcp, TOOL_BUILD
 from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
-from xcode_mcp_server.exceptions import InvalidParameterError
+from xcode_mcp_server.exceptions import InvalidParameterError, XCodeMCPError
 from xcode_mcp_server.utils.run_guard import exclusive_per_project
 from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
     build_wait_for_completion_applescript,
+    is_action_timeout,
     resolve_build_timeout,
     format_timeout_duration,
     escape_applescript_string,
@@ -298,15 +299,23 @@ def run_project_tests(project_path: str,
     test_start_time = time.time()
 
     # The script polls inside AppleScript for up to effective_timeout; the
-    # subprocess timeout must exceed that, plus buffer for workspace load.
-    success, output = run_applescript(script, timeout=effective_timeout + 60)
+    # subprocess timeout must exceed that, plus buffer for workspace load. If the
+    # subprocess is nonetheless killed (osascript unresponsive), run_applescript
+    # raises XCodeMCPError — surface that as a test timeout rather than letting
+    # it propagate as an opaque error.
+    try:
+        success, output = run_applescript(script, timeout=effective_timeout + 60)
+    except XCodeMCPError:
+        duration = format_timeout_duration(effective_timeout)
+        show_warning_notification(f"Tests timeout ({duration})")
+        return f"⏳ Tests did not complete within {duration} (Xcode did not respond)"
 
     if not success:
         # The AppleScript poll loop raises (rather than returning) when it times
-        # out, so a timeout surfaces here as a failed subprocess. Translate it
-        # into a clear test-specific message instead of leaking the shared
-        # wait-helper's raw "Build timed out…" text.
-        if "timed out" in output.lower():
+        # out, so a timeout surfaces here as a failed subprocess. Detect it by
+        # the helper's error number (not message text) and translate it into a
+        # clear test-specific message.
+        if is_action_timeout(output):
             duration = format_timeout_duration(effective_timeout)
             show_warning_notification(f"Tests timeout ({duration})")
             return f"⏳ Tests did not complete within {duration}"

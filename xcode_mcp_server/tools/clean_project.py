@@ -11,6 +11,7 @@ from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import (
     build_open_and_wait_applescript,
     build_wait_for_completion_applescript,
+    is_action_timeout,
     resolve_build_timeout,
     format_timeout_duration,
     escape_applescript_string,
@@ -63,10 +64,10 @@ def clean_project(project_path: str, timeout: Optional[int] = None) -> str:
         return output
 
     # The AppleScript poll loop raises (rather than returning) on timeout, so a
-    # timeout surfaces here as a failed subprocess. Report it as a clean-specific
-    # timeout instead of leaking the wait-helper's wording or treating it as a
-    # hard failure.
-    if "timed out" in output.lower():
+    # timeout surfaces here as a failed subprocess. Detect it by the helper's
+    # error number and report it as a clean-specific timeout instead of leaking
+    # the wait-helper's wording or treating it as a hard failure.
+    if is_action_timeout(output):
         duration = format_timeout_duration(effective_timeout)
         show_warning_notification(f"Clean timeout ({duration})")
         return f"⏳ Clean did not complete within {duration}"

@@ -38,6 +38,14 @@ BUILD_TIMEOUT_SECONDS = 600
 # would otherwise pin a tool worker and Xcode automation for hours or days.
 MAX_BUILD_TIMEOUT_SECONDS = 7200
 
+# AppleScript error number raised by build_wait_for_completion_applescript when
+# its poll loop times out. osascript appends the number in parentheses to
+# stderr, e.g. "... execution error: Tests timed out after 10 minutes (9001)",
+# so callers can recognize a poll-loop timeout via is_action_timeout() instead
+# of matching the (English, action-specific) message text. 9001 is well clear of
+# Apple's reserved error-number ranges.
+ACTION_TIMEOUT_ERROR_NUMBER = 9001
+
 # Default subprocess timeout for `osascript` invocations that are expected to
 # return quickly (lookups, cleanup commands, individual status checks). Callers
 # that wrap a long-running inner AppleScript loop (build/run/test) must pass an
@@ -167,11 +175,23 @@ def build_wait_for_completion_applescript(
         f'    repeat\n'
         f'        if completed of {result_var} is true then exit repeat\n'
         f'        if ((current date) - actionStartDate) >= {timeout_seconds} then\n'
-        f'            error "{action_name} timed out after {duration}"\n'
+        f'            error "{action_name} timed out after {duration}" number {ACTION_TIMEOUT_ERROR_NUMBER}\n'
         f'        end if\n'
         f'        delay 0.5\n'
         f'    end repeat\n'
     )
+
+
+def is_action_timeout(applescript_output: str) -> bool:
+    """Return True if `applescript_output` is the poll-loop timeout raised by
+    build_wait_for_completion_applescript.
+
+    Matched by the AppleScript error number osascript appends in parentheses
+    (ACTION_TIMEOUT_ERROR_NUMBER), so detection does not depend on the message
+    wording — which is action-specific ("Build"/"Clean"/"Tests timed out…") and
+    could otherwise be reworded out from under callers.
+    """
+    return f'({ACTION_TIMEOUT_ERROR_NUMBER})' in (applescript_output or "")
 
 
 def build_action_completed_check_applescript(escaped_path: str, escaped_action_id: str) -> str:
