@@ -59,29 +59,34 @@ class RunGuardTests(unittest.TestCase):
             t.join(timeout=5)
 
     def test_allows_different_projects_concurrently(self):
-        entered = threading.Event()
-        release = threading.Event()
+        a_entered = threading.Event()
+        a_release = threading.Event()
 
         @exclusive_per_project
-        def tool(project_path):
-            entered.set()
-            release.wait(timeout=5)
-            return "ran"
+        def tool_a(project_path):
+            a_entered.set()
+            a_release.wait(timeout=5)
+            return "ran-a"
+
+        @exclusive_per_project
+        def tool_b(project_path):
+            return "ran-b"
 
         a = os.path.realpath(os.sep)            # "/"
         b = os.path.realpath(os.path.expanduser("~"))
         self.assertNotEqual(a, b)
-        t = threading.Thread(target=lambda: tool(a))
+
+        t = threading.Thread(target=lambda: tool_a(a))
         t.start()
-        self.assertTrue(entered.wait(timeout=5))
-        # Different project must NOT be rejected — it acquires its own key.
-        with run_guard._active_lock:
-            already = b in run_guard._active_projects
-        self.assertFalse(already)
-        # Prove acquisition for b doesn't raise (run it briefly, then release).
-        release.set()
-        t.join(timeout=5)
-        self.assertEqual(tool(b), "ran")
+        self.assertTrue(a_entered.wait(timeout=5))
+        try:
+            # A's key is held right now (its thread is parked in a_release.wait).
+            # A different project must run to completion, not be rejected —
+            # actually invoke it rather than only inspecting the active set.
+            self.assertEqual(tool_b(b), "ran-b")
+        finally:
+            a_release.set()
+            t.join(timeout=5)
 
     def test_key_released_after_normal_return(self):
         @exclusive_per_project
