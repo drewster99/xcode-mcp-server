@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from typing import Dict, List, Optional
 
 
@@ -158,6 +159,100 @@ def list_destinations(project_path: str, scheme: str, timeout: int = 30) -> List
     return destinations
 
 
+def find_xcuserstate(project_path: str) -> str:
+    """Find the most recent UserInterfaceState.xcuserstate for a project.
+
+    Returns the file path, or "" if none exists (project never opened in Xcode).
+    """
+    if project_path.endswith('.xcodeproj'):
+        workspace_dir = os.path.join(project_path, "project.xcworkspace")
+    else:
+        workspace_dir = project_path
+
+    pattern = os.path.join(workspace_dir, "xcuserdata", "*", "UserInterfaceState.xcuserstate")
+    matches = glob.glob(pattern)
+    if not matches:
+        return ""
+    return max(matches, key=os.path.getmtime)
+
+
+def decode_active_destinations(xcuserstate_path: str) -> Dict:
+    """Run the Swift decoder to extract the active destination per scheme.
+
+    Returns a dict like {"SchemeName": "UDID_platform_arch"}, or an empty dict
+    on any failure (missing script, swift not found, timeout, bad output).
+    """
+    swift_script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'decode_active_destination.swift')
+    if not os.path.exists(swift_script):
+        print(f"warn: helper script not found: {swift_script}", file=sys.stderr)
+        return {}
+
+    try:
+        result = subprocess.run(
+            ['swift', swift_script, xcuserstate_path],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        print("warn: decode_active_destination.swift timed out", file=sys.stderr)
+        return {}
+    except FileNotFoundError:
+        print("warn: `swift` binary not found on PATH", file=sys.stderr)
+        return {}
+
+    if result.returncode != 0:
+        print(
+            f"warn: decode_active_destination.swift exited {result.returncode}: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return {}
+
+    if not result.stdout.strip():
+        return {}
+
+    try:
+        return json.loads(result.stdout.strip())
+    except json.JSONDecodeError as e:
+        print(f"warn: decode_active_destination.swift produced invalid JSON: {e}", file=sys.stderr)
+        return {}
+
+
+def resolve_active_destination_id(project_path: str, scheme: Optional[str] = None) -> Optional[str]:
+    """Return the UDID of the active run destination, read from Xcode's workspace
+    state (no Xcode side effects).
+
+    Prefers the given scheme's stored destination, then the active scheme's, then
+    any stored destination. Returns None if nothing is stored or the state can't
+    be read.
+    """
+    xcuserstate = find_xcuserstate(project_path)
+    if not xcuserstate:
+        return None
+
+    scheme_destinations = decode_active_destinations(xcuserstate)
+    if not scheme_destinations:
+        return None
+
+    dest_string = None
+    if scheme and scheme in scheme_destinations:
+        dest_string = scheme_destinations[scheme]
+    else:
+        active = get_active_scheme(project_path)
+        if active and active in scheme_destinations:
+            dest_string = scheme_destinations[active]
+        else:
+            dest_string = next(iter(scheme_destinations.values()), None)
+
+    if not dest_string:
+        return None
+
+    # Format is "UDID_platform_arch"; UDIDs use hyphens, never underscores, so
+    # the UDID is everything before the first underscore.
+    udid = dest_string.split('_', 1)[0]
+    return udid or None
+
+
 def _destination_test_rank(dest: Dict) -> int:
     """
     Rank a compatible destination by how well it supports building and loading a
@@ -179,30 +274,68 @@ def _destination_test_rank(dest: Dict) -> int:
     return 2
 
 
+# `-showdestinations` can omit a scheme's simulators transiently; retry a few
+# times before settling for a rank-2 "trap" destination.
+_RESOLVE_DESTINATION_ATTEMPTS = 5
+_RESOLVE_DESTINATION_RETRY_DELAY = 2.0
+
+
 def resolve_buildable_destination(project_path: str, scheme: str) -> Optional[str]:
     """
     Return a `-destination` argument value (e.g. "id=00006040-...") for the
     destination best suited to building and enumerating the scheme's tests.
 
-    Considers only destinations xcodebuild reports as compatible (no 'error'),
-    then prefers a simulator, then a native Mac, then anything else (see
-    _destination_test_rank). This avoids the "My Mac (Designed for iPad)"
-    destination, on which an iOS test bundle can fail to load. The enumerated
-    test set is identical across same-platform destinations, so any compatible
-    one of the preferred kind suffices.
+    Considers only destinations xcodebuild reports as compatible (no 'error').
+    Prefers the active run destination — what the user has selected in Xcode —
+    so a macOS app builds on My Mac and an iOS app builds on its selected
+    simulator, matching the IDE. The active destination is only trusted when it
+    is a safe build target (a simulator or a native Mac, not a physical device
+    that needs signing/attachment); otherwise, and when no active destination is
+    stored, it falls back to a preference of simulator > native Mac > other (see
+    _destination_test_rank). That avoids both the "My Mac (Designed for iPad)"
+    trap for iOS apps and the wrong-platform (iOS simulator) pick for a
+    multiplatform macOS library.
+
+    `-showdestinations` intermittently omits a scheme's simulators while
+    CoreSimulator is busy (e.g. right after a prior build-for-testing). If the
+    only compatible destinations are rank-2 "traps" (physical devices and the
+    "Designed for iPad" Mac), this retries to give the simulators a chance to
+    reappear — otherwise enumeration would land on a destination where the iOS
+    test bundle can't load.
 
     Returns None if no compatible destination can be determined (e.g. xcodebuild
     timed out, or the scheme has no eligible destinations).
     """
-    try:
-        destinations = list_destinations(project_path, scheme)
-    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
-        return None
+    # The active destination doesn't change between retries, so resolve it once.
+    active_udid = resolve_active_destination_id(project_path, scheme)
 
-    compatible = [dest for dest in destinations if 'error' not in dest]
-    if not compatible:
-        return None
+    best = None
+    for attempt in range(_RESOLVE_DESTINATION_ATTEMPTS):
+        try:
+            destinations = list_destinations(project_path, scheme)
+        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
+            return None
 
-    # min() is stable, so this keeps xcodebuild's order within a rank.
-    best = min(compatible, key=_destination_test_rank)
-    return f"id={best['id']}"
+        compatible = [dest for dest in destinations if 'error' not in dest]
+        if not compatible:
+            return None
+
+        # Prefer the active run destination when it's compatible AND a safe build
+        # target. A device (rank 2) is skipped so enumeration doesn't fail on
+        # code-signing; we fall back to a simulator of the same platform instead.
+        if active_udid:
+            active_entries = [d for d in compatible if d.get('id') == active_udid]
+            if active_entries and min(_destination_test_rank(d) for d in active_entries) < 2:
+                return f"id={active_udid}"
+
+        # min() is stable, so this keeps xcodebuild's order within a rank.
+        best = min(compatible, key=_destination_test_rank)
+        if _destination_test_rank(best) < 2:
+            return f"id={best['id']}"
+
+        # Only rank-2 traps are listed — the simulators are probably just not
+        # enumerated yet. Wait and re-query before settling for the trap.
+        if attempt < _RESOLVE_DESTINATION_ATTEMPTS - 1:
+            time.sleep(_RESOLVE_DESTINATION_RETRY_DELAY)
+
+    return f"id={best['id']}" if best else None

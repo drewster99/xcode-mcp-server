@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """get_active_run_destination tool - Get the currently active run destination"""
 
-import glob
 import json
 import os
 import subprocess
@@ -12,66 +11,11 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification
-from xcode_mcp_server.utils.xcodebuild_query import get_active_scheme
-
-
-def _find_xcuserstate(project_path: str) -> str:
-    """Find the UserInterfaceState.xcuserstate file for a project."""
-    if project_path.endswith('.xcodeproj'):
-        workspace_dir = os.path.join(project_path, "project.xcworkspace")
-    else:
-        workspace_dir = project_path
-
-    pattern = os.path.join(workspace_dir, "xcuserdata", "*", "UserInterfaceState.xcuserstate")
-    matches = glob.glob(pattern)
-    if not matches:
-        return ""
-
-    return max(matches, key=os.path.getmtime)
-
-
-def _decode_active_destinations(xcuserstate_path: str) -> dict:
-    """
-    Run the Swift decoder script to extract active destination per scheme.
-    Returns dict like {"SchemeName": "UDID_platform_arch"}
-    """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    swift_script = os.path.join(os.path.dirname(script_dir), 'utils', 'decode_active_destination.swift')
-
-    if not os.path.exists(swift_script):
-        raise XCodeMCPError(
-            f"Helper script not found: {swift_script}. The package may be "
-            f"installed incompletely."
-        )
-
-    try:
-        result = subprocess.run(
-            ['swift', swift_script, xcuserstate_path],
-            capture_output=True, text=True, timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"warn: decode_active_destination.swift timed out", file=sys.stderr)
-        return {}
-    except FileNotFoundError:
-        print("warn: `swift` binary not found on PATH", file=sys.stderr)
-        return {}
-
-    if result.returncode != 0:
-        print(
-            f"warn: decode_active_destination.swift exited {result.returncode}: "
-            f"{result.stderr.strip()}",
-            file=sys.stderr,
-        )
-        return {}
-
-    if not result.stdout.strip():
-        return {}
-
-    try:
-        return json.loads(result.stdout.strip())
-    except json.JSONDecodeError as e:
-        print(f"warn: decode_active_destination.swift produced invalid JSON: {e}", file=sys.stderr)
-        return {}
+from xcode_mcp_server.utils.xcodebuild_query import (
+    get_active_scheme,
+    find_xcuserstate,
+    decode_active_destinations,
+)
 
 
 def _lookup_simulator_info(udid: str) -> tuple:
@@ -141,7 +85,7 @@ def get_active_run_destination(
     project_name = os.path.basename(normalized_path)
 
     # Find the xcuserstate file
-    xcuserstate = _find_xcuserstate(normalized_path)
+    xcuserstate = find_xcuserstate(normalized_path)
     if not xcuserstate:
         raise XCodeMCPError(
             "No workspace state file found. The project may not have been "
@@ -149,7 +93,7 @@ def get_active_run_destination(
         )
 
     # Decode the active destinations per scheme
-    scheme_destinations = _decode_active_destinations(xcuserstate)
+    scheme_destinations = decode_active_destinations(xcuserstate)
     if not scheme_destinations:
         raise XCodeMCPError(
             "Could not determine active run destination. The project may not "
