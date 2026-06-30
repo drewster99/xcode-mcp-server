@@ -12,6 +12,7 @@ from xcode_mcp_server.config_manager import apply_config
 from xcode_mcp_server.security import validate_and_normalize_project_path
 from xcode_mcp_server.exceptions import XCodeMCPError
 from xcode_mcp_server.utils.applescript import show_result_notification
+from xcode_mcp_server.utils.xcodebuild_query import get_active_scheme
 
 
 def _find_xcuserstate(project_path: str) -> str:
@@ -71,56 +72,6 @@ def _decode_active_destinations(xcuserstate_path: str) -> dict:
     except json.JSONDecodeError as e:
         print(f"warn: decode_active_destination.swift produced invalid JSON: {e}", file=sys.stderr)
         return {}
-
-
-def _get_active_scheme_from_xcuserstate(project_path: str) -> str:
-    """Get the active scheme name from xcschememanagement.plist (no Xcode side effects)."""
-    # Look in xcuserdata for scheme management plist
-    pattern = os.path.join(project_path, "xcuserdata", "*", "xcschemes", "xcschememanagement.plist")
-    matches = glob.glob(pattern)
-    if not matches:
-        return ""
-
-    plist_path = max(matches, key=os.path.getmtime)
-    try:
-        result = subprocess.run(
-            ['plutil', '-convert', 'json', '-o', '-', plist_path],
-            capture_output=True, text=True, timeout=5,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"warn: plutil timed out reading {plist_path}", file=sys.stderr)
-        return ""
-    except FileNotFoundError:
-        print("warn: `plutil` binary not found on PATH", file=sys.stderr)
-        return ""
-
-    if result.returncode != 0:
-        print(
-            f"warn: plutil exited {result.returncode} for {plist_path}: "
-            f"{result.stderr.strip()}",
-            file=sys.stderr,
-        )
-        return ""
-
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        print(f"warn: plutil produced invalid JSON for {plist_path}: {e}", file=sys.stderr)
-        return ""
-
-    scheme_state = data.get("SchemeUserState", {})
-    # Keys look like "SchemeName.xcscheme_^#shared#^_" or "SchemeName.xcscheme"
-    # Find the one with lowest orderHint (or just return the first)
-    best_scheme = ""
-    best_order = float('inf')
-    for key, value in scheme_state.items():
-        # Strip the suffix to get scheme name
-        scheme_name = key.split('.xcscheme')[0]
-        order = value.get('orderHint', 999)
-        if order < best_order:
-            best_order = order
-            best_scheme = scheme_name
-    return best_scheme
 
 
 def _lookup_simulator_info(udid: str) -> tuple:
@@ -206,7 +157,7 @@ def get_active_run_destination(
         )
 
     # Determine which scheme's destination to report
-    active_scheme = _get_active_scheme_from_xcuserstate(normalized_path)
+    active_scheme = get_active_scheme(normalized_path)
 
     dest_string = None
     if active_scheme and active_scheme in scheme_destinations:

@@ -3,9 +3,7 @@
 
 import json
 import os
-import re
 import subprocess
-import sys
 from typing import Optional
 
 from xcode_mcp_server.server import mcp, TOOL_READONLY
@@ -16,61 +14,11 @@ from xcode_mcp_server.utils.applescript import (
     show_notification,
     show_result_notification,
 )
-
-
-def _get_first_scheme_via_xcodebuild(project_path: str, project_flag: str) -> Optional[str]:
-    """Get the first scheme name using xcodebuild -list (no Xcode side effects)."""
-    try:
-        result = subprocess.run(
-            ['xcodebuild', '-list', project_flag, project_path],
-            capture_output=True, text=True, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"warn: xcodebuild -list timed out for {project_path}", file=sys.stderr)
-        return None
-    except FileNotFoundError:
-        print("warn: `xcodebuild` binary not found on PATH", file=sys.stderr)
-        return None
-
-    # Parse "Schemes:" section from output
-    in_schemes = False
-    for line in result.stdout.split('\n'):
-        stripped = line.strip()
-        if stripped == 'Schemes:':
-            in_schemes = True
-            continue
-        if in_schemes:
-            if stripped == '' or stripped.endswith(':'):
-                break
-            return stripped
-    return None
-
-
-def _parse_destination_line(line: str) -> Optional[dict]:
-    """
-    Parse a single xcodebuild destination line.
-    Format: { platform:iOS Simulator, arch:arm64, id:ABC123, OS:26.4, name:iPhone 17 Pro }
-    """
-    line = line.strip()
-    if not line.startswith('{') or not line.endswith('}'):
-        return None
-
-    inner = line[1:-1].strip()
-    if not inner:
-        return None
-
-    # Parse key:value pairs — keys are simple words, values run until next ", key:" or end
-    result = {}
-    pattern = r'(\w+):(.+?)(?=, \w+:|$)'
-    for match in re.finditer(pattern, inner):
-        key = match.group(1).strip()
-        value = match.group(2).strip()
-        result[key] = value
-
-    if not result.get('name') or not result.get('id'):
-        return None
-
-    return result
+from xcode_mcp_server.utils.xcodebuild_query import (
+    project_flag_for,
+    get_first_scheme,
+    parse_destination_line,
+)
 
 
 @mcp.tool(annotations=TOOL_READONLY)
@@ -109,14 +57,11 @@ def list_run_destinations(
     project_name = os.path.basename(normalized_path)
 
     # Determine the xcodebuild flag based on project type
-    if normalized_path.endswith('.xcworkspace'):
-        project_flag = '-workspace'
-    else:
-        project_flag = '-project'
+    project_flag = project_flag_for(normalized_path)
 
     # Get scheme name if not provided
     if not scheme:
-        scheme = _get_first_scheme_via_xcodebuild(normalized_path, project_flag)
+        scheme = get_first_scheme(normalized_path)
         if not scheme:
             raise XCodeMCPError(
                 f"Could not determine scheme for {project_name}. "
@@ -149,7 +94,7 @@ def list_run_destinations(
     for line in output.split('\n'):
         line = line.strip()
         if line.startswith('{') and line.endswith('}'):
-            parsed = _parse_destination_line(line)
+            parsed = parse_destination_line(line)
             if parsed:
                 # Skip generic placeholder destinations
                 if 'placeholder' in parsed.get('id', ''):
