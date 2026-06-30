@@ -21,6 +21,71 @@ mcp dev xcode_mcp_server/__main__.py
 python -m xcode_mcp_server
 ```
 
+### Testing in-progress changes through the real MCP path
+
+Two MCP servers are registered against this repo:
+
+- **`xcode-mcp-server`** — the *deployed* build (`uvx xcode-mcp-server==<version>`).
+  It runs the published PyPI/beta release, NOT your working tree. Editing source
+  here does nothing to it until you `./deploy.sh` and switch versions.
+- **`xcode-mcp-local-dev-server`** — runs your **live local source** via
+  `run_local_for_claude.sh` (`cd` into the repo, then `python -m xcode_mcp_server`).
+  Use this to test uncommitted changes without deploying. (Note: the canonical
+  repo path `~/cursor/xcode-mcp-server` and `~/Documents/ncc_source/cursor/xcode-mcp-server`
+  are the same directory via symlink.)
+
+**Critical freshness rule:** a Claude instance spawns the dev-server process once,
+when it first connects, and Python imports each module once per process. So the
+dev-server bound to a *running* Claude session is **frozen at that session's
+start** — editing source afterward does NOT update it. Per-tool-call does not
+re-import; only a brand-new server process picks up edits.
+
+To test the latest source after editing, pick one:
+
+1. **Spawn a fresh Claude instance from bash** (best for end-to-end MCP-path
+   testing — each invocation starts its own dev-server process = current source):
+   ```bash
+   claude -p "Call mcp__xcode-mcp-local-dev-server__list_project_tests with
+   project_path=... and report the result verbatim." \
+     --allowedTools "mcp__xcode-mcp-local-dev-server__list_project_tests"
+   ```
+2. **Call the tool function directly via `python3 -c`** (fastest for iterating on
+   tool logic; imports fresh source each run, but bypasses FastMCP/serialization):
+   ```bash
+   python3 -c "
+   import xcode_mcp_server.security as sec
+   sec.ALLOWED_FOLDERS = {'/path/allowed'}
+   from xcode_mcp_server.tools.<tool_module> import <tool_fn>
+   fn = getattr(<tool_fn>, 'fn', <tool_fn>)   # unwrap the FastMCP tool
+   print(fn('/path/to/Project.xcodeproj'))
+   "
+   ```
+
+Do NOT trust the dev-server tools exposed in your *current* session to reflect
+edits you just made — they reflect the source as of when this session connected.
+
+**Confirming the running server matches your edits.** When running from a source
+checkout, the `version` tool appends a source fingerprint, e.g.
+`Xcode MCP Server version 1.3.14b1 (dev source e5f07eab)`. The hash is a SHA-256
+of all `.py` files in the package, computed at import — so it identifies the
+source the process actually loaded. Deployed (uvx) builds have no `.git` and omit
+the suffix. To verify a server is running your current code, compare its reported
+hash to the on-disk hash:
+```bash
+python3 -c "
+import hashlib, os
+d = hashlib.sha256()
+for root, dirs, files in os.walk('xcode_mcp_server'):
+    dirs[:] = sorted(x for x in dirs if x != '__pycache__')
+    for n in sorted(files):
+        if n.endswith('.py'):
+            with open(os.path.join(root, n), 'rb') as h: d.update(h.read())
+print(d.hexdigest()[:8])
+"
+```
+If the `version` tool's hash differs from this, the server is running stale code
+(start a fresh Claude instance). If they match, it is your current source.
+
 ### Testing
 ```bash
 # Run tests using the test runner framework
