@@ -78,13 +78,17 @@ def _parse_destination_line(line: str) -> Optional[dict]:
 def list_run_destinations(
     project_path: str,
     scheme: Optional[str] = None,
+    include_incompatible_destinations: bool = False,
 ) -> str:
     """
     List available run destinations (devices and simulators) for a project scheme.
 
-    Returns destinations filtered to what's compatible with the given scheme.
-    For example, an iOS scheme will show iOS simulators and devices but not Mac
-    destinations (unless the app supports Mac Catalyst).
+    By default, only destinations the scheme can actually build and run for are
+    returned. xcodebuild also reports destinations whose platform doesn't match
+    the scheme (e.g. every iOS simulator for a macOS-only app); each carries an
+    'error' explaining the mismatch. Those are excluded unless
+    include_incompatible_destinations is True. Excluding them can drop dozens of
+    simulator entries for a single-platform app.
 
     Use the 'id' field from the results with set_run_destination to change
     which device Xcode builds and runs for.
@@ -93,10 +97,13 @@ def list_run_destinations(
         project_path: Path to an Xcode project (.xcodeproj) or workspace (.xcworkspace).
         scheme: Scheme name to list destinations for. If not provided, uses the
             first scheme found via xcodebuild.
+        include_incompatible_destinations: If True, also include destinations
+            whose platform is incompatible with the scheme (each with an 'error'
+            field describing why). Defaults to False.
 
     Returns:
         JSON array of destinations, each with: name, platform, id, and optionally
-        arch, OS, and variant fields.
+        arch, OS, error, and variant fields.
     """
     normalized_path = validate_and_normalize_project_path(project_path, "Listing destinations for")
     project_name = os.path.basename(normalized_path)
@@ -146,6 +153,10 @@ def list_run_destinations(
             if parsed:
                 # Skip generic placeholder destinations
                 if 'placeholder' in parsed.get('id', ''):
+                    continue
+                # Drop platform-incompatible destinations (each flagged by an
+                # 'error' from xcodebuild) unless the caller asked for them.
+                if not include_incompatible_destinations and 'error' in parsed:
                     continue
                 destinations.append(parsed)
 
