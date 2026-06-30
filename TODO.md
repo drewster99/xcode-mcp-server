@@ -15,6 +15,9 @@
 - [ ] Add timeout configuration for build and test operations
 - [ ] Implement parallel test execution support
 
+### Project Creation
+- [ ] Make `create_project` toolchain-aware instead of emitting a format frozen in source (see "Project Template Generation — Toolchain Awareness" below)
+
 ### Documentation & Quality
 - [ ] Create CHANGELOG.md with version history
 - [ ] Add ROADMAP.md for future feature planning
@@ -31,6 +34,89 @@
 ---
 
 ## Implementation Details
+
+### Project Template Generation — Toolchain Awareness
+
+**Current behavior (as of this writing)**: `create_project` does NOT use Xcode at
+all to scaffold a project, and does NOT consult the `xcode-select`-selected
+toolchain. The entire project is synthesized in-process from hardcoded Python
+string constants in `xcode_mcp_server/utils/project_templates.py`. There is no
+`xcrun`, no `DEVELOPER_DIR`, no read of Xcode's `.xctemplate` bundles, and no
+filesystem copy — the only filesystem call in that module is `open(path, 'x')`
+(a write). `generate_project()` fills the templates with fresh UUIDs and writes
+each file directly.
+
+The eight baked-in template constants and what they produce:
+| Constant | Produces |
+|---|---|
+| `PBXPROJ_TEMPLATE` | `project.pbxproj` |
+| `WORKSPACE_DATA_TEMPLATE` | `project.xcworkspace/contents.xcworkspacedata` |
+| `APP_SWIFT_TEMPLATE` | `{Identifier}App.swift` |
+| `CONTENT_VIEW_TEMPLATE` | `ContentView.swift` |
+| `ASSETS_CONTENTS_JSON` | `Assets.xcassets/Contents.json` |
+| `ACCENT_COLOR_CONTENTS_JSON` | `AccentColor.colorset/Contents.json` |
+| `APP_ICON_IOS_CONTENTS_JSON` / `APP_ICON_MACOS_CONTENTS_JSON` | `AppIcon.appiconset/Contents.json` |
+
+Real Xcode templates (for reference) live at:
+`<selected Xcode>.app/Contents/Developer/Library/Xcode/Templates/…`
+(resolve the active Xcode with `xcode-select -p` / `xcrun --find`).
+
+**Problem**: The generated format is FROZEN in source, independent of whatever
+Xcode is selected:
+- `objectVersion = 77` + `PBXFileSystemSynchronizedRootGroup` → requires Xcode 16+.
+  On an older selected Xcode the project may fail to open or prompt to upgrade.
+- Default deployment target hardcoded to `26.0`, default bundle id
+  `com.example.{identifier}`.
+- Only a SwiftUI App template (iOS/macOS). No other product types, no tests
+  target, no Storyboard/UIKit, no Swift package, etc.
+- As Xcode evolves the pbxproj format (object version bumps, new isa types),
+  these strings silently drift out of date and must be hand-edited.
+
+This is intentional decoupling (project creation works with zero dependency on
+where/whether Xcode's templates exist), but it trades freshness and fidelity for
+that independence.
+
+**Goal**: Let `create_project` respect the selected toolchain (and/or broaden the
+template set) without giving up the "works offline / no Xcode UI" property where
+possible.
+
+**Options (roughly increasing fidelity / effort)**:
+1. **Version-adaptive hardcoded templates (smallest change)**. Detect the active
+   Xcode version (`xcodebuild -version` / parse `version.plist` under
+   `xcode-select -p`) and pick an `objectVersion` + group style that matches
+   (e.g. emit a pre-77 file-group layout for Xcode < 16). Keep generation
+   in-process. Pros: still no Xcode UI, no template parsing. Cons: we maintain N
+   format variants by hand.
+2. **Derive defaults from the toolchain**. Even if we keep our own pbxproj
+   strings, pull the default deployment target and available SDKs from the
+   selected Xcode (`xcrun --sdk iphoneos --show-sdk-version`, etc.) instead of
+   hardcoding `26.0`. Low effort, removes the most surprising hardcode.
+3. **Drive Xcode's real templates** via the toolchain. Investigate scaffolding
+   from `…/Library/Xcode/Templates/…` (the same `.xctemplate` bundles Xcode's
+   "New Project" uses) so output matches exactly what a user gets in the IDE.
+   This is non-trivial: the template format (`TemplateInfo.plist`, ancestors,
+   option substitution) is undocumented and Xcode applies it through internal
+   machinery, not a public CLI. Highest fidelity, highest risk/maintenance.
+4. **Expand product types** regardless of source: add a tests target, a macOS
+   AppKit/SwiftUI choice, a Swift Package option, etc. — orthogonal to where the
+   format comes from, but worth tracking here.
+
+**Recommendation**: Start with options 1 + 2 (version-adaptive `objectVersion`
+and toolchain-derived deployment target/SDK). They remove the real correctness
+risk (a frozen format that breaks on older/newer Xcode) while preserving the
+no-Xcode-needed generation path. Treat option 3 as research-only until there's a
+demonstrated need for exact IDE parity.
+
+**Validation when implemented**:
+- Generate on machines with different `xcode-select` targets and confirm the
+  project opens cleanly in each (no upgrade prompt, no "damaged project").
+- Round-trip: open the generated project, let Xcode re-save, and diff the
+  pbxproj to see what Xcode would have changed.
+- Keep a regression test that opens each generated variant headlessly.
+
+**Key files**: `xcode_mcp_server/utils/project_templates.py` (the templates +
+`generate_project`), `xcode_mcp_server/tools/create_project.py` (validation +
+entry point), `xcode_mcp_server/security.py` (`validate_parent_for_new_project`).
 
 ### Selective Test Execution (GET_RUN_DESTINATIONS research)
 
