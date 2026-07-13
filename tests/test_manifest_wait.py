@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from xcode_mcp_server.utils.build_log_parser import (
+from drews_xcode_mcp.utils.build_log_parser import (
     CF_EPOCH_OFFSET,
     get_scheme_name_for_uuid,
     snapshot_build_uuids,

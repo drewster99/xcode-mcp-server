@@ -44,7 +44,7 @@ class XcodeMCPTestRunner:
         print(f"Set allowed folders to: {self.working_dir}")
 
         # Set the global variable in the security module where it's actually used
-        from xcode_mcp_server.security import set_allowed_folders
+        from drews_xcode_mcp.security import set_allowed_folders
         set_allowed_folders({str(self.working_dir)})
         print(f"Set ALLOWED_FOLDERS to: {self.working_dir}")
 
@@ -81,8 +81,8 @@ class XcodeMCPTestRunner:
 
         Looks up the tool function from the FastMCP registry and calls it directly.
         """
-        from xcode_mcp_server.server import mcp
-        import xcode_mcp_server.tools  # noqa: F401 — triggers @mcp.tool() registration
+        from drews_xcode_mcp.server import mcp
+        import drews_xcode_mcp.tools  # noqa: F401 — triggers @mcp.tool() registration
 
         tool = mcp._tool_manager._tools.get(tool_name)
         if not tool:

@@ -141,7 +141,7 @@ class MinimalTests(XcodeMCPTestRunner):
         print("\nTesting helper functions...")
 
         # Test escape_applescript_string
-        import xcode_mcp_server.__main__ as mcp_server
+        import drews_xcode_mcp.__main__ as mcp_server
 
         # Test escaping quotes
         escaped = mcp_server.escape_applescript_string('Test "quoted" string')

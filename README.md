@@ -1,16 +1,23 @@
-# Xcode MCP Server
+# Drew's Xcode MCP Server (drews-xcode-mcp)
 
-[![PyPI](https://img.shields.io/pypi/v/xcode-mcp-server.svg)](https://pypi.org/project/xcode-mcp-server/)
-[![Python Versions](https://img.shields.io/pypi/pyversions/xcode-mcp-server.svg)](https://pypi.org/project/xcode-mcp-server/)
-[![Downloads](https://static.pepy.tech/badge/xcode-mcp-server)](https://pepy.tech/project/xcode-mcp-server)
+[![PyPI](https://img.shields.io/pypi/v/drews-xcode-mcp.svg)](https://pypi.org/project/drews-xcode-mcp/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/drews-xcode-mcp.svg)](https://pypi.org/project/drews-xcode-mcp/)
+[![Downloads](https://static.pepy.tech/badge/drews-xcode-mcp)](https://pepy.tech/project/drews-xcode-mcp)
 [![MCP](https://img.shields.io/badge/MCP-Server-blue)](https://modelcontextprotocol.io)
 [![macOS Only](https://img.shields.io/badge/platform-macOS-lightgrey)](https://www.apple.com/macos/)
 [![Xcode](https://img.shields.io/badge/Xcode-Required-blue)](https://developer.apple.com/xcode/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[![GitHub last commit](https://img.shields.io/github/last-commit/drewster99/xcode-mcp-server)](https://github.com/drewster99/xcode-mcp-server/commits)
+[![GitHub last commit](https://img.shields.io/github/last-commit/drewster99/drews-xcode-mcp)](https://github.com/drewster99/drews-xcode-mcp/commits)
 
 An MCP (Model Context Protocol) server that enables AI assistants to control and interact with Xcode for Apple platform development.
+
+> **Renamed from `xcode-mcp-server`.** With several unrelated projects sharing that
+> name — and Xcode itself now shipping a built-in MCP server — this project is now
+> `drews-xcode-mcp`. **Existing setups keep working:** the old PyPI name is a
+> compatibility package that forwards to this one, and all settings carry over.
+> When convenient, update your MCP configuration to run `drews-xcode-mcp` (keep
+> your existing server key/name so tool permissions are unaffected).
 
 ## What It Does
 
@@ -54,13 +61,13 @@ which uv || brew install uv
 ### 1. Claude Code (Recommended)
 
 ```bash
-claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx` xcode-mcp-server
+claude mcp add --scope user --transport stdio -- drews-xcode-mcp `which uvx` drews-xcode-mcp
 ```
 
 To run a specific version, use:
 ```bash
 # Example: How to run v1.3.0b6
-claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx` xcode-mcp-server==1.3.0b6
+claude mcp add --scope user --transport stdio -- drews-xcode-mcp `which uvx` drews-xcode-mcp==1.3.0b6
 ```
 
 That's it! Claude Code handles the rest automatically.
@@ -72,25 +79,25 @@ Edit your Claude Desktop config file (`~/Library/Application Support/Claude/clau
 ```json
 {
     "mcpServers": {
-        "xcode-mcp-server": {
+        "drews-xcode-mcp": {
             "command": "uvx",
             "args": [
-                "xcode-mcp-server"
+                "drews-xcode-mcp"
             ]
         }
     }
 }
 ```
 
-If you'd like to allow only certain projects or folders to be accessible by xcode-mcp-server, add the `env` option, with a colon-separated list of absolute folder paths, like this:
+If you'd like to allow only certain projects or folders to be accessible by drews-xcode-mcp, add the `env` option, with a colon-separated list of absolute folder paths, like this:
 
 ```json
 {
     "mcpServers": {
-        "xcode-mcp-server": {
+        "drews-xcode-mcp": {
             "command": "uvx",
             "args": [
-                "xcode-mcp-server"
+                "drews-xcode-mcp"
             ],
             "env": {
                 "XCODEMCP_ALLOWED_FOLDERS": "/Users/andrew/my_project:/Users/andrew/Documents/source"
@@ -109,9 +116,9 @@ Or edit `~/.cursor/mcp.json` directly:
 ```json
 {
     "mcpServers": {
-        "xcode-mcp-server": {
+        "drews-xcode-mcp": {
             "command": "uvx",
-            "args": ["xcode-mcp-server"]
+            "args": ["drews-xcode-mcp"]
         }
     }
 }
@@ -151,7 +158,7 @@ When running the server directly (for development or custom setups), these optio
 
 Example:
 ```bash
-xcode-mcp-server --no-build-warnings --show-notifications --allowed ~/Projects
+drews-xcode-mcp --no-build-warnings --show-notifications --allowed ~/Projects
 ```
 
 **Note:** When using MCP clients (Claude, Cursor), configure these via the `env` section in your client's config file instead.
@@ -166,7 +173,7 @@ Test with MCP Inspector:
 
 ```bash
 export XCODEMCP_ALLOWED_FOLDERS=~/Projects
-mcp dev xcode_mcp_server/__main__.py
+mcp dev drews_xcode_mcp/__main__.py
 ```
 
 This opens an inspector interface where you can test tools directly. Provide paths as quoted strings: `"/Users/you/Projects/MyApp.xcodeproj"`

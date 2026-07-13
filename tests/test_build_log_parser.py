@@ -23,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import xcode_mcp_server.utils.build_log_parser as build_log_parser
-from xcode_mcp_server.utils.build_log_parser import (
+import drews_xcode_mcp.utils.build_log_parser as build_log_parser
+from drews_xcode_mcp.utils.build_log_parser import (
     parse_xcactivitylog,
     select_derived_data_dirs_for_project,
 )

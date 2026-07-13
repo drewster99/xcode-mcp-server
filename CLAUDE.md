@@ -4,32 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is the Xcode MCP Server - a Model Context Protocol (MCP) server that enables AI assistants to interact with Xcode projects. It provides tools for building, running, and managing Xcode projects/workspaces programmatically through AppleScript.
+This is Drew's Xcode MCP Server (PyPI package `drews-xcode-mcp`, module `drews_xcode_mcp`) - a Model Context Protocol (MCP) server that enables AI assistants to interact with Xcode projects. It provides tools for building, running, and managing Xcode projects/workspaces programmatically through AppleScript.
+
+The package was originally published as `xcode-mcp-server`. That PyPI name now hosts a compatibility shim (see `shim/`) that depends on `drews-xcode-mcp` with an exact version pin and forwards the old `xcode-mcp-server` command to it. `deploy.sh` and `deploy-beta.sh` publish both packages in lockstep; the shim's version and pin are rewritten automatically at deploy time. The settings directory is `~/.drews-xcode-mcp`; on first run, a pre-rename `~/.xcode-mcp-server` directory is adopted via rename (see `ConfigManager._migrate_legacy_config_dir`). The cache directory deliberately keeps the old name (`~/Library/Caches/xcode-mcp-server`) — it holds only transient logs/screenshots, and log paths already handed out in prior tool results should stay valid. When launched through the legacy name, the shim sets `XCODE_MCP_LEGACY_PACKAGE_NAME`, and the server adds migration guidance to its instructions, the `version` tool, and a `migrate_to_drews_xcode_mcp` MCP prompt.
 
 ## Development Commands
 
 ### Local Development
 ```bash
-# Quick start with dev script (sets up conda env and runs MCP Inspector)
+# Quick start with dev script (sets up venv and runs MCP Inspector)
 ./dev.sh
 
 # Manual setup: Test the server locally with MCP Inspector
 export XCODEMCP_ALLOWED_FOLDERS=/Users/username/Projects
-mcp dev xcode_mcp_server/__main__.py
+mcp dev drews_xcode_mcp/__main__.py
 
 # Run the server directly
-python -m xcode_mcp_server
+python -m drews_xcode_mcp
 ```
 
 ### Testing in-progress changes through the real MCP path
 
 Two MCP servers are registered against this repo:
 
-- **`xcode-mcp-server`** — the *deployed* build (`uvx xcode-mcp-server==<version>`).
+- **`xcode-mcp-server`** — the *deployed* build (`uvx drews-xcode-mcp==<version>`).
   It runs the published PyPI/beta release, NOT your working tree. Editing source
   here does nothing to it until you `./deploy.sh` and switch versions.
 - **`xcode-mcp-local-dev-server`** — runs your **live local source** via
-  `run_local_for_claude.sh` (`cd` into the repo, then `python -m xcode_mcp_server`).
+  `run_local_for_claude.sh` (`cd` into the repo, then `python -m drews_xcode_mcp`).
   Use this to test uncommitted changes without deploying. (Note: the canonical
   repo path `~/cursor/xcode-mcp-server` and `~/Documents/ncc_source/cursor/xcode-mcp-server`
   are the same directory via symlink.)
@@ -53,9 +55,9 @@ To test the latest source after editing, pick one:
    tool logic; imports fresh source each run, but bypasses FastMCP/serialization):
    ```bash
    python3 -c "
-   import xcode_mcp_server.security as sec
+   import drews_xcode_mcp.security as sec
    sec.ALLOWED_FOLDERS = {'/path/allowed'}
-   from xcode_mcp_server.tools.<tool_module> import <tool_fn>
+   from drews_xcode_mcp.tools.<tool_module> import <tool_fn>
    fn = getattr(<tool_fn>, 'fn', <tool_fn>)   # unwrap the FastMCP tool
    print(fn('/path/to/Project.xcodeproj'))
    "
@@ -75,7 +77,7 @@ hash to the on-disk hash:
 python3 -c "
 import hashlib, os
 d = hashlib.sha256()
-for root, dirs, files in os.walk('xcode_mcp_server'):
+for root, dirs, files in os.walk('drews_xcode_mcp'):
     dirs[:] = sorted(x for x in dirs if x != '__pycache__')
     for n in sorted(files):
         if n.endswith('.py'):
@@ -120,27 +122,28 @@ pip install -e .
 ### Testing with uvx
 ```bash
 # Run the published version
-uvx xcode-mcp-server
+uvx drews-xcode-mcp
 
 # Run with specific allowed folders
-XCODEMCP_ALLOWED_FOLDERS=/path/to/projects uvx xcode-mcp-server
+XCODEMCP_ALLOWED_FOLDERS=/path/to/projects uvx drews-xcode-mcp
 ```
 
 ## Architecture
 
 ### Core Components
 
-1. **Main Entry Point** (`xcode_mcp_server/__init__.py`)
+1. **Main Entry Point** (`drews_xcode_mcp/__init__.py`)
    - Handles command-line argument parsing
    - Manages allowed folder configuration from environment and CLI args
    - Validates security settings before server startup
 
-2. **MCP Server Implementation** (`xcode_mcp_server/server.py` and `xcode_mcp_server/tools/`)
+2. **MCP Server Implementation** (`drews_xcode_mcp/server.py` and `drews_xcode_mcp/tools/`)
    - Built with FastMCP framework
-   - Implements 24 MCP tools for Xcode interaction:
-     - **Project discovery**: `version`, `get_xcode_projects`
+   - Implements the MCP tools for Xcode interaction (one module per tool under `drews_xcode_mcp/tools/`; the module list there is authoritative):
+     - **Project discovery**: `version`, `get_xcode_projects`, `create_project`
      - **File system**: `get_directory_tree`, `get_directory_listing`
-     - **Build operations**: `get_project_schemes`, `build_project`, `clean_project`, `stop_project`, `get_build_errors`
+     - **Build operations**: `get_project_schemes`, `build_project`, `clean_project`, `stop_project`, `get_build_errors`, `get_build_results`
+     - **Run destinations**: `list_run_destinations`, `set_run_destination`, `get_active_run_destination`
      - **Runtime**: `run_project_with_user_interaction`, `run_project_until_terminated`, `run_project_unmonitored`, `get_runtime_output`
      - **Testing**: `list_project_tests`, `run_project_tests`, `get_latest_test_results`
      - **Screenshots**: `take_xcode_screenshot`, `take_simulator_screenshot`, `take_window_screenshot`, `take_app_screenshot`
@@ -180,7 +183,7 @@ Custom exception hierarchy:
 
 ## Version Management
 
-Version is stored in `xcode_mcp_server/__init__.py` and managed by hatch. The `deploy.sh` script automatically increments the patch version, but you can manually control it with:
+Version is stored in `drews_xcode_mcp/__init__.py` and managed by hatch. The `deploy.sh` script automatically increments the patch version, but you can manually control it with:
 ```bash
 hatch version patch  # Increment patch version
 hatch version minor  # Increment minor version

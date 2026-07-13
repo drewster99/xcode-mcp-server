@@ -9,4 +9,4 @@ else
     exit 1
 fi
 
-exec "${PYTHON}" -m xcode_mcp_server
+exec "${PYTHON}" -m drews_xcode_mcp

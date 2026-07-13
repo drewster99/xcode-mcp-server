@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import xcode_mcp_server.utils.xcresult as xcresult
-from xcode_mcp_server.utils.xcresult import (
+import drews_xcode_mcp.utils.xcresult as xcresult
+from drews_xcode_mcp.utils.xcresult import (
     snapshot_xcresult_mtimes,
     wait_for_xcresult_after_timestamp,
 )

@@ -40,7 +40,7 @@
 **Current behavior (as of this writing)**: `create_project` does NOT use Xcode at
 all to scaffold a project, and does NOT consult the `xcode-select`-selected
 toolchain. The entire project is synthesized in-process from hardcoded Python
-string constants in `xcode_mcp_server/utils/project_templates.py`. There is no
+string constants in `drews_xcode_mcp/utils/project_templates.py`. There is no
 `xcrun`, no `DEVELOPER_DIR`, no read of Xcode's `.xctemplate` bundles, and no
 filesystem copy — the only filesystem call in that module is `open(path, 'x')`
 (a write). `generate_project()` fills the templates with fresh UUIDs and writes
@@ -114,9 +114,9 @@ demonstrated need for exact IDE parity.
   pbxproj to see what Xcode would have changed.
 - Keep a regression test that opens each generated variant headlessly.
 
-**Key files**: `xcode_mcp_server/utils/project_templates.py` (the templates +
-`generate_project`), `xcode_mcp_server/tools/create_project.py` (validation +
-entry point), `xcode_mcp_server/security.py` (`validate_parent_for_new_project`).
+**Key files**: `drews_xcode_mcp/utils/project_templates.py` (the templates +
+`generate_project`), `drews_xcode_mcp/tools/create_project.py` (validation +
+entry point), `drews_xcode_mcp/security.py` (`validate_parent_for_new_project`).
 
 ### Selective Test Execution (GET_RUN_DESTINATIONS research)
 
@@ -196,7 +196,7 @@ test_projects/
 **Test runner fix that works**:
 ```python
 # Set ALLOWED_FOLDERS in MCP module directly
-import xcode_mcp_server.__main__ as mcp_server
+import drews_xcode_mcp.__main__ as mcp_server
 mcp_server.ALLOWED_FOLDERS = {str(self.working_dir)}
 ```
 

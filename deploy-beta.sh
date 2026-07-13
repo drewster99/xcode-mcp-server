@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# Beta Deployment script for xcode-mcp-server
-# This script builds and publishes BETA packages to PyPI
+# Beta Deployment script for drews-xcode-mcp
+# Builds and publishes BETA packages to PyPI, together with a matching beta of
+# the legacy 'xcode-mcp-server' compatibility shim (see shim/).
 
 set -e  # Exit on error
 
-echo "🚀 Starting xcode-mcp-server BETA deployment..."
+echo "🚀 Starting drews-xcode-mcp BETA deployment..."
 echo ""
 
 # Pre-flight: ensure no unstaged changes
@@ -79,9 +80,20 @@ fi
 hatch version "$NEW_VERSION"
 echo ""
 
-# Build the package
-echo "🔨 Building package..."
+# Keep the legacy compatibility shim in lockstep: same version, exact pin.
+# The exact pin matters because uvx resolves dependencies once and caches the
+# result - a floating pin would strand shim users on whatever was current.
+echo "🔗 Syncing legacy xcode-mcp-server shim to $NEW_VERSION..."
+sed -i '' -E "s|^version = \".*\"$|version = \"$NEW_VERSION\"|" shim/pyproject.toml
+sed -i '' -E "s|drews-xcode-mcp==[^\"]*|drews-xcode-mcp==$NEW_VERSION|" shim/pyproject.toml
+echo ""
+
+# Build both packages
+echo "🔨 Building drews-xcode-mcp..."
 python -m build
+echo ""
+echo "🔨 Building legacy xcode-mcp-server shim..."
+python -m build shim --outdir dist
 echo ""
 
 # Copy new build to archive
@@ -91,24 +103,45 @@ echo ""
 
 # Upload to PyPI
 echo "📤 Uploading to PyPI..."
-twine upload dist/*
-echo ""
-
-# Verify on PyPI
-echo "🔍 Verifying version $NEW_VERSION on PyPI..."
-sleep 2
-if curl -sf "https://pypi.org/pypi/xcode-mcp-server/$NEW_VERSION/json" > /dev/null 2>&1; then
-    echo "✅ Version $NEW_VERSION confirmed on PyPI"
-else
-    echo "⚠️  Could not verify version $NEW_VERSION on PyPI."
-    echo "Skipping auto-commit. Please verify manually and commit the version change."
+if ! twine upload --skip-existing dist/*; then
+    echo "❌ twine upload failed. Some files may already be on PyPI."
+    echo "   Recover with: twine upload --skip-existing dist/*"
+    echo "   Then verify both packages at $NEW_VERSION on PyPI, and commit the"
+    echo "   version bump manually (do not re-run this script: the unstaged"
+    echo "   version changes will fail the pre-flight check)."
     exit 1
 fi
 echo ""
 
+# Verify on PyPI
+echo "🔍 Verifying version $NEW_VERSION on PyPI..."
+MAX_ATTEMPTS=5
+for PACKAGE in drews-xcode-mcp xcode-mcp-server; do
+    VERIFIED=false
+    for (( ATTEMPT=1; ATTEMPT<=MAX_ATTEMPTS; ATTEMPT++ )); do
+        if curl -sf "https://pypi.org/pypi/$PACKAGE/$NEW_VERSION/json" > /dev/null 2>&1; then
+            VERIFIED=true
+            break
+        fi
+        if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+            echo "   $PACKAGE $NEW_VERSION not visible yet (attempt $ATTEMPT/$MAX_ATTEMPTS), retrying in 5s..."
+            sleep 5
+        fi
+    done
+    if [ "$VERIFIED" = true ]; then
+        echo "✅ $PACKAGE $NEW_VERSION confirmed on PyPI"
+    else
+        echo "⚠️  Could not verify $PACKAGE $NEW_VERSION on PyPI."
+        echo "Skipping auto-commit. Please verify manually and commit the version change."
+        exit 1
+    fi
+done
+echo ""
+
 # Commit and push the version bump
 echo "📝 Committing version bump..."
-git add xcode_mcp_server/__init__.py
+git add drews_xcode_mcp/__init__.py
+git add shim/pyproject.toml
 git add dist
 git add dist-archive
 git commit -m "v$NEW_VERSION"
@@ -119,7 +152,7 @@ echo "✅ Beta deployment complete! v$NEW_VERSION is live."
 echo ""
 echo "Test the deployed beta version with:"
 echo ""
-echo "    uvx xcode-mcp-server==$NEW_VERSION"
+echo "    uvx drews-xcode-mcp==$NEW_VERSION"
 echo ""
 
 # Optional: Update Claude Code MCP server
@@ -132,9 +165,10 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Removing existing xcode-mcp-server..."
     claude mcp remove xcode-mcp-server || true
 
-    # Add new beta version
-    echo "Adding xcode-mcp-server $NEW_VERSION..."
-    claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx`  "xcode-mcp-server==$NEW_VERSION"
+    # Add new beta version (server key stays 'xcode-mcp-server' so tool names
+    # and permission allowlists are unaffected)
+    echo "Adding drews-xcode-mcp $NEW_VERSION..."
+    claude mcp add --scope user --transport stdio -- xcode-mcp-server `which uvx`  "drews-xcode-mcp==$NEW_VERSION"
 
     echo ""
     echo "✅ Claude Code updated! Restart Claude Code for changes to take effect."

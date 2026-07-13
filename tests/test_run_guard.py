@@ -17,9 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from xcode_mcp_server.utils.run_guard import exclusive_per_project
-import xcode_mcp_server.utils.run_guard as run_guard
-from xcode_mcp_server.exceptions import XCodeMCPError
+from drews_xcode_mcp.utils.run_guard import exclusive_per_project
+import drews_xcode_mcp.utils.run_guard as run_guard
+from drews_xcode_mcp.exceptions import XCodeMCPError
 
 
 class RunGuardTests(unittest.TestCase):
