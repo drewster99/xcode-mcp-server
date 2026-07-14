@@ -76,13 +76,19 @@ Please migrate my MCP configuration:
 3. For each confirmed entry, update ONLY what launches the server so it runs
    `drews-xcode-mcp` instead of `xcode-mcp-server` (e.g. `uvx drews-xcode-mcp`;
    for pip installs, `pip install drews-xcode-mcp` and run `drews-xcode-mcp`).
-   Re-create it in the SAME scope it came from, and keep everything else
-   exactly as it was: the server key/name, any `env` values such as
-   XCODEMCP_ALLOWED_FOLDERS, and any command-line flags like --allowed.
-   Keeping the same server key preserves tool names and permission allowlists.
+   Re-create it in the SAME scope it came from, and keep any `env` values such
+   as XCODEMCP_ALLOWED_FOLDERS and any command-line flags like --allowed
+   exactly as they were.
+   Server key/name: if the old key is exactly 'xcode-mcp-server' (the old
+   default), rename it to 'drews-xcode-mcp' — the user never chose that name,
+   so it should follow the package rename. Warn me that the rename changes the
+   MCP tool names (mcp__xcode-mcp-server__* becomes mcp__drews-xcode-mcp__*),
+   so any permission allowlists referencing the old tool names need updating.
+   Any OTHER key is one the user picked deliberately; keep it unchanged, which
+   also preserves tool names and permission allowlists.
    For a Claude Code entry the commands look like:
-     claude mcp remove --scope <same-scope> <server-key>
-     claude mcp add --scope <same-scope> --transport stdio <server-key> \\
+     claude mcp remove --scope <same-scope> <old-server-key>
+     claude mcp add --scope <same-scope> --transport stdio <new-server-key> \\
        -e KEY=value -- $(which uvx) drews-xcode-mcp
    (one -e flag per env value from the old entry; omit -e if it had none)
    For project/local scope, run these from the project directory the entry
@@ -96,8 +102,8 @@ Please migrate my MCP configuration:
 5. VERIFY YOUR WORK. For each migrated Claude Code entry, shell out to a fresh
    Claude instance (a new process picks up the new config; the current session
    does not) and confirm the server is available and running the new package:
-     claude -p "Call the version tool of the <server-key> MCP server and report
-     its output verbatim." --allowedTools "mcp__<server-key>__version"
+     claude -p "Call the version tool of the <new-server-key> MCP server and
+     report its output verbatim." --allowedTools "mcp__<new-server-key>__version"
    Run it from the project directory for project/local scope. Success means the
    output contains "Drew's Xcode MCP Server (drews-xcode-mcp) version" and does
    NOT contain a legacy-package NOTE (that note only appears when launched via
@@ -110,9 +116,11 @@ Please migrate my MCP configuration:
 
 6. Finally, recheck the whole job: re-run `claude mcp list` (and re-read any
    JSON files you edited) to confirm no entry anywhere still launches
-   'xcode-mcp-server', that every migrated entry kept its original key, scope,
-   env, and flags, and that nothing else in those files was modified. Report
-   what you changed and the verification results."""
+   'xcode-mcp-server', that every migrated entry kept its original scope, env,
+   and flags, that keys followed the rename rule from step 3 (default key
+   renamed to 'drews-xcode-mcp', custom keys unchanged), and that nothing else
+   in those files was modified. Report what you changed and the verification
+   results."""
 
 # Tool behavior annotations (advisory hints for MCP clients).
 #
