@@ -17,10 +17,11 @@ An MCP (Model Context Protocol) server that enables AI assistants to control and
 > `drews-xcode-mcp`. **Existing setups keep working:** the old PyPI name is a
 > compatibility package that forwards to this one, and all settings carry over.
 > When convenient, update your MCP configuration to run `drews-xcode-mcp`. If your
-> server key/name is the old default `xcode-mcp-server`, rename it to
-> `drews-xcode-mcp` too (tool permission allowlists referencing the old tool names
-> will need updating); if you chose a custom key, keep it and tool permissions are
-> unaffected.
+> server key/name is the old default `xcode-mcp-server`, we recommend renaming it
+> to `drews-xcode-mcp` too — just remember to update any tool permission allowlists
+> referencing the old tool names (`mcp__xcode-mcp-server__*` becomes
+> `mcp__drews-xcode-mcp__*`). If you chose a custom key, keep it and tool
+> permissions are unaffected.
 
 ## What It Does
 

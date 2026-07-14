@@ -80,10 +80,16 @@ Please migrate my MCP configuration:
    as XCODEMCP_ALLOWED_FOLDERS and any command-line flags like --allowed
    exactly as they were.
    Server key/name: if the old key is exactly 'xcode-mcp-server' (the old
-   default), rename it to 'drews-xcode-mcp' — the user never chose that name,
-   so it should follow the package rename. Warn me that the rename changes the
-   MCP tool names (mcp__xcode-mcp-server__* becomes mcp__drews-xcode-mcp__*),
-   so any permission allowlists referencing the old tool names need updating.
+   default), recommend renaming it to 'drews-xcode-mcp' so the deprecated name
+   doesn't linger in my configuration — but ask me first, explaining the
+   tradeoff: the rename changes the MCP tool names (mcp__xcode-mcp-server__*
+   becomes mcp__drews-xcode-mcp__*), so permission allowlists referencing the
+   old tool names stop matching. If I agree to the rename, also search my
+   permission allowlists for 'mcp__xcode-mcp-server__' entries — for Claude
+   Code: ~/.claude/settings.json, each affected project's
+   .claude/settings.json and .claude/settings.local.json, and allowedTools
+   entries in ~/.claude.json — show me what you found, and offer to rewrite
+   them to the new tool names. If I decline the rename, keep the old key.
    Any OTHER key is one the user picked deliberately; keep it unchanged, which
    also preserves tool names and permission allowlists.
    For a Claude Code entry the commands look like:
@@ -117,10 +123,10 @@ Please migrate my MCP configuration:
 6. Finally, recheck the whole job: re-run `claude mcp list` (and re-read any
    JSON files you edited) to confirm no entry anywhere still launches
    'xcode-mcp-server', that every migrated entry kept its original scope, env,
-   and flags, that keys followed the rename rule from step 3 (default key
-   renamed to 'drews-xcode-mcp', custom keys unchanged), and that nothing else
-   in those files was modified. Report what you changed and the verification
-   results."""
+   and flags, that each key matches what I decided in step 3 (renamed to
+   'drews-xcode-mcp' with allowlists updated, or kept as-is), and that nothing
+   else in those files was modified. Report what you changed and the
+   verification results."""
 
 # Tool behavior annotations (advisory hints for MCP clients).
 #
