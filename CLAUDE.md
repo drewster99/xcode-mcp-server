@@ -27,13 +27,13 @@ python -m drews_xcode_mcp
 
 Two MCP servers are registered against this repo:
 
-- **`xcode-mcp-server`** — the *deployed* build (`uvx drews-xcode-mcp==<version>`).
+- **`drews-xcode-mcp`** — the *deployed* build (`uvx drews-xcode-mcp==<version>`).
   It runs the published PyPI/beta release, NOT your working tree. Editing source
   here does nothing to it until you `./deploy.sh` and switch versions.
 - **`xcode-mcp-local-dev-server`** — runs your **live local source** via
   `run_local_for_claude.sh` (`cd` into the repo, then `python -m drews_xcode_mcp`).
   Use this to test uncommitted changes without deploying. (Note: the canonical
-  repo path `~/cursor/xcode-mcp-server` and `~/Documents/ncc_source/cursor/xcode-mcp-server`
+  repo path `~/cursor/drews-xcode-mcp` and `~/Documents/ncc_source/cursor/drews-xcode-mcp`
   are the same directory via symlink.)
 
 **Critical freshness rule:** a Claude instance spawns the dev-server process once,
@@ -68,7 +68,7 @@ edits you just made — they reflect the source as of when this session connecte
 
 **Confirming the running server matches your edits.** When running from a source
 checkout, the `version` tool appends a source fingerprint, e.g.
-`Xcode MCP Server version 1.3.14b1 (dev source e5f07eab)`. The hash is a SHA-256
+`Drew's Xcode MCP Server (drews-xcode-mcp) version 1.3.14b1 (dev source e5f07eab)`. The hash is a SHA-256
 of all `.py` files in the package, computed at import — so it identifies the
 source the process actually loaded. Deployed (uvx) builds have no `.git` and omit
 the suffix. To verify a server is running your current code, compare its reported
