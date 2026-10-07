@@ -117,10 +117,7 @@ python tests/test_runner.py            # Test runner infrastructure (not a test 
 # Deploy to PyPI (increments version, builds, and uploads)
 ./deploy.sh
 
-# Manual version increment
-hatch version patch  # 1.2.0 -> 1.2.1
-hatch version minor  # 1.2.0 -> 1.3.0
-hatch version major  # 1.2.0 -> 2.0.0
+# Manual version bump: see Version Management
 
 # Build distribution manually
 python -m build
@@ -164,7 +161,7 @@ XCODEMCP_ALLOWED_FOLDERS=/path/to/projects uvx drews-xcode-mcp
 
 The server implements path-based security:
 - **ALLOWED_FOLDERS**: Set of validated absolute paths where access is permitted
-- Paths are validated for: absolute paths, existence, directory type, no '..' components
+- Paths are validated by `validate_and_normalize_project_path()` (see Internal Helper Functions)
 - Default to $HOME if no folders specified
 - Every tool call validates the project path against allowed folders
 
@@ -172,7 +169,7 @@ The server implements path-based security:
 
 All Xcode interactions use AppleScript via `osascript`:
 - Opens projects/workspaces in Xcode
-- Waits for workspace loading (60-second timeout)
+- Waits for workspace loading (see Workspace Loading under Operational Behavior)
 - Handles build/run/clean operations
 - Extracts build errors from Xcode's UI
 
@@ -230,47 +227,42 @@ tool rejects a bad argument must call the undecorated function
 (`XcodeMCPTestRunner.run_tool_bypassing_config`), which is the only thing that
 sees the caller's value unmodified.
 
-## Key Implementation Details
-
-- **Notifications**: Optional macOS notifications for tool invocations (--show-notifications flag)
-- **Scheme Handling**: Active scheme detection with fallback to scheme list
-- **Build Output**: Captures first 25 lines of build errors for concise feedback
-- **Path Normalization**: Removes trailing slashes, validates absolute paths
-- **Spotlight Integration**: Uses `mdfind` for efficient project discovery across allowed folders
-
 ## Version Management
 
 Version is stored in `drews_xcode_mcp/__init__.py` and managed by hatch. The `deploy.sh` script automatically increments the patch version, but you can manually control it with:
 ```bash
-hatch version patch  # Increment patch version
-hatch version minor  # Increment minor version
-hatch version major  # Increment major version
+hatch version patch  # Increment patch version: 1.2.0 -> 1.2.1
+hatch version minor  # Increment minor version: 1.2.0 -> 1.3.0
+hatch version major  # Increment major version: 1.2.0 -> 2.0.0
 ```
 
-## Important Implementation Details
+## Key Implementation Details
+
+### General
+- **Spotlight Integration**: Uses `mdfind` for efficient project discovery across allowed folders
 
 ### Internal Helper Functions
-- **`extract_console_logs_from_xcresult()`**: Parses .xcresult bundles to extract runtime console output as structured JSON
+- **`extract_console_logs_from_xcresult()`**: Parses .xcresult bundles to extract runtime console output as structured JSON, from `actionsInvocationRecord` → `actions` → `actionResult` → `logRef` paths, with errors/warnings prioritized
 - **`extract_build_errors_and_warnings()`**: Filters build logs to show only errors/warnings as structured JSON (configurable via `include_warnings` parameter)
 - **`extract_test_results_from_xcresult()`**: Parses .xcresult test bundles to extract concise test results with failure details
 - **`wait_for_xcresult_after_timestamp()`**: Polls for new .xcresult files after a run starts, with timeout
 - **`find_xcresult_for_project()`**: Locates the most recent .xcresult bundle for a project (runtime logs)
 - **`find_xcresult_bundle()`**: Locates the most recent .xcresult bundle for a project (test logs)
-- **`validate_and_normalize_project_path()`**: Ensures paths are absolute, exist, and are allowed by security policy
+- **`validate_and_normalize_project_path()`**: Ensures paths are absolute, exist, are directories, contain no '..' components, have trailing slashes removed, and are allowed by security policy
 - **`escape_applescript_string()`**: Properly escapes strings for safe AppleScript execution
 - **`utils/scheme_action.py`**: Reads and interprets Xcode scheme action results. `SchemeActionStatus` mirrors Xcode's `scheme action result status` enumeration; `build_action_result_report_applescript()` / `build_action_result_report_tail_applescript()` emit the status + error message + build log in one round trip; `parse_action_result_report()` parses it; `describe_build_failure()` decides whether a *run* action's failure was a build failure; `report_build_failure()` formats a known-failed *build* action
 - **`utils/xcodebuild_query.py` workspace state**: `decode_workspace_state.swift` decodes a project's `UserInterfaceState.xcuserstate` once and returns both the scheme Xcode has selected (`ActiveScheme` → `IDENameString`) and the run destination it last used per scheme. `read_workspace_run_state()` is the one Python reader of it; `select_active_run_destination()` applies the active-scheme choice to an already-read state (given scheme → Xcode's selected scheme → menu top → any), `read_active_run_destination()` composes them, and `resolve_active_destination_id()` is the None-returning wrapper used to prefer the active destination when picking a test destination. `get_active_scheme()` reads the selected scheme from that same state and only falls back to `_scheme_with_lowest_order_hint()` (the top of the scheme menu, from `xcschememanagement.plist`) when there is no state at all — the orderHint guess named the wrong scheme for 6 of 26 projects on this machine, picking a Playground scheme for two client workspaces and nothing at all for four, since a `.xcworkspace` has no such plist of its own. A decode failure (no `swift`, decoder missing, timeout, bad JSON) raises naming that cause, because reporting it as an empty result reads to the caller as "this project has never been run". Xcode builds the destination identifier in `-[IDERunDestination(IDERunContextRecents) _stateSavingIdentifierForDestinationSchemeRunnableIsForWatch:]` by joining with `_` whichever of these are present: device identifier, platform name, an `I` marker for an Apple-internal SDK, the SDK variant (written only when it differs from the platform name), the architecture, the SDK's first cohort platform, and the paired device's identifier for a watch app — e.g. `00008301-..._watchos_arm64_32_<iPhone UDID>`. The architecture is the only open-ended component and several architecture names contain `_` (`arm64_32`, `x86_64`, `x86_64h`), so `parse_run_destination_identifier()` anchors on the closed sets (variants are exactly `macos`/`iosmac`, declared in `<SDK>/SDKSettings.plist`) and takes what remains as the architecture verbatim, so a new architecture survives intact instead of being split. `sdk`/`architecture` are `""` when the identifier does not carry them (the generic `dvtdevice-...:placeholder_iphoneos` destination has no architecture), and the device identifier is always returned, because callers that only need identity must not lose it. Note `iosmac` is Mac Catalyst; "My Mac (Designed for iPad)" carries no variant — it is the Mac's device identifier under the `iphoneos` platform, which is why one device identifier can match several run destinations. And `sdk` here (`iphonesimulator`) is a different vocabulary from the `platform` field `list_run_destinations` reports (`iOS Simulator`), as `sdk_variant` is from that tool's `variant` (`Designed for iPad`) — hence the distinct names
 
 ### Operational Behavior
-- **Scheme Selection**: When no scheme is specified in `build_project`, the active scheme is used automatically
+- **Scheme Handling**: Active scheme detection with fallback to scheme list; when no scheme is specified in `build_project`, the active scheme is used automatically
 - **Run Destination Confirmation**: Xcode flushes workspace state to disk lazily, so `get_active_run_destination` called right after `set_run_destination` used to report the previous destination and callers concluded the set had failed. `set_run_destination` therefore polls that same state (0.25s interval, 15s cap — the write was measured landing 4.99-5.23s after the set on Xcode 26.5, so a 5s cap would report ordinary successes as unconfirmed; the remaining budget is passed down as the decode timeout, subject to a 2s floor so the final read is not starved into a misleading "could not be read") and returns `active_destination_confirmed`. The write lands under the *selected scheme's* key, so the AppleScript returns `name of active scheme of workspaceDoc` and the poll reads exactly that key — the `get_active_scheme()` heuristic would read the wrong one on a multi-scheme project and reports nothing at all for a `.xcworkspace`. A confirmation that cannot be made never fails the tool (the destination is already set): it returns `active_destination_confirmed: false` with a `note` stating what was actually observed — a stale identifier, a missing scheme key, or the state read error — never a guess at the cause. A Mac reports one device identifier for both "My Mac" and "My Mac (Designed for iPad)", so when the id matches several destinations the first is selected and all are listed under `matched_destinations`
 - **Debug Output**: Server prints debug information to stderr for troubleshooting
 - **Workspace Loading**: All operations wait for Xcode workspace to fully load before proceeding (60-second timeout)
-- **Build Log Filtering**: Build failures return structured JSON with errors/warnings (up to 25 lines) and full log path
+- **Build Log Filtering**: Build failures return structured JSON with errors/warnings (captures the first 25 lines of build errors for concise feedback), filtered using regex patterns, and the full log path for deep analysis
 - **Run Outcome Detection**: `run` in Xcode means build-and-run, so a run whose build fails still reports `completed`. All three run tools therefore read `status of <scheme action result>`, never `completed` alone. `run_project_with_user_interaction` and `run_project_until_terminated` inspect the action's build log after it completes and return build errors instead of runtime logs when the build failed; `run_project_unmonitored` returns before the app exits and so can never observe its run action's outcome, so it builds explicitly first and only dispatches `run` if that build succeeded. A failure the build log cannot explain (app crashed, nonzero exit) keeps the runtime logs and attaches a `scheme_action` block to the JSON rather than discarding them
-- **Test Result Filtering**: Test results return structured JSON with summary and only failed test details; passing tests are counted but not detailed
+- **Test Result Filtering**: Test results return structured JSON with summary and only failed test details; passing tests are counted but not detailed. The test tree is parsed recursively to extract pass/fail counts and failure details, returned as concise structured JSON (10-50x smaller than raw xcresult output)
 - **Warning Control**: Global `BUILD_WARNINGS_ENABLED` and `BUILD_WARNINGS_FORCED` flags control warning display; can be overridden per-tool with `include_warnings` parameter
-- **Notifications**: Optional macOS notifications via `osascript` (controlled by `NOTIFICATIONS_ENABLED` global flag)
+- **Notifications**: Optional macOS notifications for tool invocations (`--show-notifications` flag) via `osascript` (controlled by `NOTIFICATIONS_ENABLED` global flag)
 
 ### xcresult Management
 The server relies heavily on Xcode's .xcresult bundles for extracting build, runtime, and test information:
@@ -278,7 +270,4 @@ The server relies heavily on Xcode's .xcresult bundles for extracting build, run
 - **Test results**: Located in `~/Library/Developer/Xcode/DerivedData/*/Logs/Test/`
 - Parsed using `xcrun xcresulttool` with appropriate subcommands
 - Timestamped checking prevents reading stale results
-- **Runtime output**: Console logs extracted from `actionsInvocationRecord` → `actions` → `actionResult` → `logRef` paths, returned as structured JSON with errors/warnings prioritized
 - **Console output location differs by Xcode version**: `xcresulttool get log --type console` reads the bundle's `ConsoleLogSection`. Xcode 27 (bundle format 3.60) moved runtime console output to a new `ConsoleSessionSection` and left that section a stub, so the command succeeds while returning zero items — runs appeared to produce no output. `extract_console_logs_from_xcresult` therefore falls back to reading `consoleSessionRef` via the deprecated `xcresulttool get object --legacy` when the supported command yields nothing. The supported path stays primary, so this stops being used automatically if a later Xcode repopulates `ConsoleLogSection`. See "Console Output Moved in Xcode 27" in TODO.md
-- **Test results**: Test tree parsed recursively to extract pass/fail counts and failure details, returned as concise structured JSON (10-50x smaller than raw xcresult output)
-- **Build errors**: Filtered using regex patterns, returned as structured JSON with full log path for deep analysis
