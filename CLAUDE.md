@@ -71,7 +71,7 @@ edits you just made — they reflect the source as of when this session connecte
 
 **Confirming the running server matches your edits.** When running from a source
 checkout, the `version` tool appends a source fingerprint, e.g.
-`Drew's Xcode MCP Server (drews-xcode-mcp) version 1.3.14b1 (dev source e5f07eab)`. The hash is a SHA-256
+`Drew's Xcode MCP Server (drews-xcode-mcp) version X.Y.Z (dev source e5f07eab)`. The hash is a SHA-256
 of all `.py` files in the package, computed at import — so it identifies the
 source the process actually loaded. Deployed (uvx) builds have no `.git` and omit
 the suffix. To verify a server is running your current code, compare its reported
@@ -93,10 +93,17 @@ If the `version` tool's hash differs from this, the server is running stale code
 
 ### Testing
 ```bash
-# Run tests using the test runner framework
-python tests/test_basic.py      # Basic functionality tests
-python tests/test_build.py      # Build operation tests
-python tests/test_runner.py     # Test infrastructure
+# Run all tests
+scripts/run_all_tests.sh
+
+# Run individual test files
+python tests/test_basic.py             # Basic functionality tests
+python tests/test_build.py             # Build operation tests
+python tests/test_build_log_parser.py  # xcactivitylog parsing regression tests
+python tests/test_run_guard.py         # Per-project run/test exclusivity guard
+python tests/test_manifest_wait.py     # LogStoreManifest UUID-diff wait regression tests
+python tests/test_xcresult_wait.py     # xcresult new-bundle selection tests
+python tests/test_runner.py            # Test runner infrastructure (not a test suite)
 
 # Tests automatically:
 # - Set up isolated working directory (test_projects/working/)
@@ -243,7 +250,6 @@ hatch version major  # Increment major version
 ## Important Implementation Details
 
 ### Internal Helper Functions
-- **`get_frontmost_project()`**: Not exposed as MCP tool; retrieves the currently open Xcode project path from frontmost window
 - **`extract_console_logs_from_xcresult()`**: Parses .xcresult bundles to extract runtime console output as structured JSON
 - **`extract_build_errors_and_warnings()`**: Filters build logs to show only errors/warnings as structured JSON (configurable via `include_warnings` parameter)
 - **`extract_test_results_from_xcresult()`**: Parses .xcresult test bundles to extract concise test results with failure details
